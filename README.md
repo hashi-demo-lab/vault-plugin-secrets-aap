@@ -18,7 +18,9 @@ revoked. Vault becomes the single point of issuance, audit, and revocation for A
 - **AAP 2.5 gateway and 2.4 controller** — configurable `tokens_api_path`.
 - **Renewable leases** — extend without re-minting (AAP tokens default to ~1-year expiry).
 - **Idempotent revocation** — a token already gone (`404`) is treated as revoked.
-- **Enterprise hardening** — seal-wrapped config/roles, token never disclosed on read,
+- **Config-time verification** — writing `config` makes an authenticated probe to AAP, so a
+  bad address, base path, TLS trust, or privileged token is rejected up front.
+- **Hardening** — seal-wrapped config/roles, token never disclosed on read,
   optional custom CA trust, scope-locked roles.
 
 ## Quick start
@@ -105,6 +107,15 @@ secrets:
 > the least-surprising model for operators: leases renew and revoke the way they expect,
 > and the token ID for revocation is carried in the lease's internal data (and survives the
 > JSON round-trip Vault performs when persisting leases).
+
+> **Security note — revocation snapshot blast radius.** So that a token can always be
+> revoked even after the operator changes or deletes `config`, the engine snapshots the AAP
+> connection (including the **privileged token**) into each lease's internal data. The
+> engine's own storage (`config`, `role/*`, WAL) is seal-wrapped, but these lease copies
+> live in Vault core's expiration-manager storage, which a plugin cannot seal-wrap (it is
+> barrier-encrypted only). Treat the privileged token as present wherever active leases are,
+> and **rotate it through this engine's `config`** — never out-of-band in AAP — since
+> out-of-band rotation would strand the snapshots on a dead credential.
 
 ## Development
 

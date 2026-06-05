@@ -124,7 +124,8 @@ func (b *aapBackend) tokenRenew(ctx context.Context, req *logical.Request, _ *fr
 		return nil, fmt.Errorf("error retrieving role %q during renew: %w", roleName, err)
 	}
 	if role == nil {
-		// The role was deleted after issuance; let the lease run out naturally.
+		// The role was deleted after issuance. Deny the renewal; the lease keeps
+		// its current TTL and expires on schedule, at which point Revoke fires.
 		return nil, fmt.Errorf("cannot renew: role %q no longer exists", roleName)
 	}
 

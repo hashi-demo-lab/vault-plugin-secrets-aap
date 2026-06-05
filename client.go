@@ -153,6 +153,35 @@ func (c *aapClient) CreateToken(ctx context.Context, scope, description string) 
 	return &token, nil
 }
 
+// VerifyToken performs a lightweight authenticated GET against the tokens
+// collection to confirm the configured address, base path, TLS trust, and
+// privileged token are all usable before the engine starts minting. It is
+// called on config write so misconfiguration surfaces immediately rather than
+// on the first creds/ read.
+//
+// A 401/403 means the privileged token is wrong or unauthorized; any other
+// non-2xx or transport error means the endpoint is unreachable or misrouted.
+// Callers treat a non-nil error as a reason to reject the config write.
+func (c *aapClient) VerifyToken(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.tokensURL(""), nil)
+	if err != nil {
+		return err
+	}
+
+	body, status, err := c.do(req)
+	if err != nil {
+		return fmt.Errorf("could not reach AAP at %s%s: %w", c.address, c.basePath, err)
+	}
+	switch {
+	case status >= 200 && status < 300:
+		return nil
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return fmt.Errorf("AAP rejected the configured token (HTTP %d): %s", status, truncate(body))
+	default:
+		return fmt.Errorf("unexpected response verifying AAP connection (HTTP %d): %s", status, truncate(body))
+	}
+}
+
 // RevokeToken deletes an AAP token by ID. A 404 is treated as success so that
 // revocation is idempotent — Vault may retry, and a token already gone is the
 // desired end state.

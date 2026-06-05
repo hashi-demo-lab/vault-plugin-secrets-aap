@@ -59,6 +59,12 @@ func (b *aapBackend) pathCredentialsRead(ctx context.Context, req *logical.Reque
 // token is created in AAP but before the lease is durably stored, the periodic
 // WAL rollback revokes the orphaned token. On success the WAL is removed before
 // returning, because the lease itself then carries the token ID for revocation.
+//
+// One window is irreducible: a process crash between CreateToken returning and
+// PutWAL committing leaves a token in AAP with no WAL to clean it up. AAP has no
+// reserve-then-commit token API, so the ID needed for the WAL only exists after
+// the token does. The window is sub-second; such tokens must be reaped by the
+// role's description tag or AAP's own expiry.
 func (b *aapBackend) createCreds(ctx context.Context, req *logical.Request, roleName string, role *aapRoleEntry) (*logical.Response, error) {
 	token, revocationConfig, err := b.createToken(ctx, req.Storage, role)
 	if err != nil {

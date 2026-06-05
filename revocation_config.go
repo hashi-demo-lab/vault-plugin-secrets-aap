@@ -18,6 +18,18 @@ func cloneConfig(config *aapConfig) *aapConfig {
 	return &clone
 }
 
+// addRevocationData snapshots the AAP connection — including the privileged
+// token — into a lease's internal data so revocation succeeds even if the
+// operator later changes or deletes the config. This is a deliberate tradeoff:
+// it makes revocation robust at the cost of duplicating the privileged token
+// once per active lease.
+//
+// Security note on blast radius: the engine's own storage (config, role/*, WAL)
+// is seal-wrapped via PathsSpecial, but these lease copies live in Vault core's
+// expiration-manager storage, which a plugin cannot seal-wrap (it is
+// barrier-encrypted only). Treat the privileged token as present wherever leases
+// are, and rotate it through this engine's config — never out-of-band in AAP —
+// since out-of-band rotation would strand these snapshots on a dead credential.
 func addRevocationData(data map[string]interface{}, config *aapConfig) {
 	if config == nil {
 		return

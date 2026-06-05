@@ -69,6 +69,12 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 	defer m.mu.Unlock()
 
 	switch {
+	case r.Method == http.MethodGet && suffix == "":
+		// Connection verification (VerifyToken) lists the tokens collection.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"results": []interface{}{}})
+
 	case r.Method == http.MethodPost && suffix == "":
 		var body struct {
 			Scope       string `json:"scope"`

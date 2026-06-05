@@ -174,6 +174,18 @@ func (b *aapBackend) pathConfigWrite(ctx context.Context, req *logical.Request, 
 		return logical.ErrorResponse(err.Error()), nil
 	}
 
+	// Verify the connection before persisting so a bad address, base path, TLS
+	// trust setting, or privileged token is caught at config time rather than on
+	// the first creds/ read. A verification failure rejects the write; to instead
+	// store-and-warn, surface this as resp.AddWarning rather than an error.
+	verifyClient, err := newClient(config)
+	if err != nil {
+		return logical.ErrorResponse(err.Error()), nil
+	}
+	if err := verifyClient.VerifyToken(ctx); err != nil {
+		return logical.ErrorResponse("AAP connection verification failed: %s", err), nil
+	}
+
 	entry, err := logical.StorageEntryJSON(configStoragePath, config)
 	if err != nil {
 		return nil, err
