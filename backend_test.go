@@ -31,21 +31,20 @@ func getTestBackend(tb testing.TB) (*aapBackend, logical.Storage) {
 }
 
 // mockAAP is an in-process stand-in for the AAP token API used by unit tests.
+//
+// It models the real AAP behavior that matters here: a minted token is owned by
+// whichever identity authenticates the request. identities maps a bearer token
+// to the user id it represents, so a bootstrap token mints as its own user.
 type mockAAP struct {
-	mu        sync.Mutex
-	nextID    int64
-	live      map[int64]string // id -> scope, for tokens that still exist
-	revoked   map[int64]bool   // ids that received a DELETE
-	created   int              // count of successful mints
-	wantAuth  string           // expected bearer token
-	users     map[string]int64 // username -> id, for ResolveUserID lookups
-	mintUsers map[int64]int64  // token id -> owner id recorded at mint
-
-	// forceOwner, when non-zero, makes the mock ignore the requested "user" field
-	// and record this id as the owner instead — reproducing AAP 2.5 gateway
-	// behavior, where the user field is silently ignored and the token is owned by
-	// the authenticating identity.
-	forceOwner int64
+	mu         sync.Mutex
+	nextID     int64
+	live       map[int64]string // id -> scope, for tokens that still exist
+	revoked    map[int64]bool   // ids that received a DELETE
+	created    int              // count of successful mints
+	wantAuth   string           // admin bearer token
+	users      map[string]int64 // username -> id, for ResolveUserID lookups
+	identities map[string]int64 // bearer token -> owner user id
+	mintUsers  map[int64]int64  // token id -> owner id recorded at mint
 }
 
 func newMockAAP(bearer string) *mockAAP {
@@ -55,9 +54,31 @@ func newMockAAP(bearer string) *mockAAP {
 		revoked:  map[int64]bool{},
 		wantAuth: bearer,
 		// Service accounts a per-user role can target in tests.
-		users:     map[string]int64{"svc-deploy": 7, "svc-readonly": 8},
-		mintUsers: map[int64]int64{},
+		users: map[string]int64{"admin": 2, "svc-deploy": 7, "svc-readonly": 8},
+		// The admin token mints as id 2 ("admin"). Bootstrap tokens are added per
+		// test via addIdentity.
+		identities: map[string]int64{bearer: 2},
+		mintUsers:  map[int64]int64{},
 	}
+}
+
+// addIdentity registers a bootstrap bearer token that mints as the given user id.
+func (m *mockAAP) addIdentity(token string, userID int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.identities[token] = userID
+}
+
+// ownerFor returns the user id a bearer token authenticates as, and whether the
+// token is known (authorized).
+func (m *mockAAP) ownerFor(r *http.Request) (int64, bool) {
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if len(auth) <= len(prefix) {
+		return 0, false
+	}
+	id, ok := m.identities[auth[len(prefix):]]
+	return id, ok
 }
 
 // server starts a TLS test server and returns it; callers must Close it.
@@ -71,7 +92,7 @@ func (m *mockAAP) server(tb testing.TB) *httptest.Server {
 
 // handleUsers serves the ?username= lookup ResolveUserID performs.
 func (m *mockAAP) handleUsers(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Authorization") != "Bearer "+m.wantAuth {
+	if _, ok := m.ownerFor(r); !ok {
 		http.Error(w, `{"detail":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -104,7 +125,8 @@ func (m *mockAAP) mintUserFor(id int64) int64 {
 }
 
 func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Authorization") != "Bearer "+m.wantAuth {
+	callerID, ok := m.ownerFor(r)
+	if !ok {
 		http.Error(w, `{"detail":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -144,18 +166,14 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Scope       string `json:"scope"`
 			Description string `json:"description"`
-			User        int64  `json:"user"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		id := m.nextID
 		m.nextID++
 		m.live[id] = body.Scope
-		owner := body.User
-		if m.forceOwner != 0 {
-			// Reproduce AAP 2.5: ignore the requested user, own by the caller.
-			owner = m.forceOwner
-		}
-		m.mintUsers[id] = owner
+		// AAP owns the token to the authenticating identity, ignoring any
+		// requested owner — this is the behavior the engine relies on.
+		m.mintUsers[id] = callerID
 		m.created++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)

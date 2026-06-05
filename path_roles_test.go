@@ -108,8 +108,9 @@ func TestRole_UsernamePersistedAndReturned(t *testing.T) {
 	ctx := context.Background()
 
 	testRoleCreate(t, b, s, "deploy", map[string]interface{}{
-		"scope":    "write",
-		"username": "svc-deploy",
+		"scope":           "write",
+		"username":        "svc-deploy",
+		"bootstrap_token": "svc-deploy-secret-token",
 	})
 
 	resp, err := b.HandleRequest(ctx, &logical.Request{
@@ -117,6 +118,13 @@ func TestRole_UsernamePersistedAndReturned(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "svc-deploy", resp.Data["username"])
+	require.Equal(t, true, resp.Data["bootstrap_token_set"])
+	require.NotContains(t, resp.Data, "bootstrap_token", "bootstrap_token must never be returned on read")
+
+	// The bootstrap token is persisted (used internally) but not disclosed.
+	role, err := b.getRole(ctx, s, "deploy")
+	require.NoError(t, err)
+	require.Equal(t, "svc-deploy-secret-token", role.BootstrapToken)
 
 	// Empty by default for roles that don't target a user.
 	testRoleCreate(t, b, s, "plain", map[string]interface{}{"scope": "read"})
@@ -125,6 +133,7 @@ func TestRole_UsernamePersistedAndReturned(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "", resp.Data["username"])
+	require.Equal(t, false, resp.Data["bootstrap_token_set"])
 }
 
 // TestRole_SchemaUpgrade confirms a role persisted before the username field was

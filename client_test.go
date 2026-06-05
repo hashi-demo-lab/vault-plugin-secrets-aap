@@ -55,7 +55,7 @@ func TestClient_CreateAndRevoke(t *testing.T) {
 	c := newTestClient(t, srv.URL, "admin-token")
 	ctx := context.Background()
 
-	tok, err := c.CreateToken(ctx, "write", "vault-test", 0)
+	tok, err := c.CreateToken(ctx, "write", "vault-test")
 	require.NoError(t, err)
 	require.NotZero(t, tok.ID)
 	require.NotEmpty(t, tok.Token)
@@ -94,21 +94,23 @@ func TestClient_ResolveUserID(t *testing.T) {
 	require.Contains(t, err.Error(), "not found")
 }
 
-func TestClient_CreateToken_BindsUser(t *testing.T) {
+func TestClient_CreateToken_OwnedByCaller(t *testing.T) {
 	m := newMockAAP("admin-token")
 	srv := m.server(t)
 	defer srv.Close()
-
-	c := newTestClient(t, srv.URL, "admin-token")
 	ctx := context.Background()
 
-	// userID == 0 must omit the user field (mint as engine identity).
-	tok, err := c.CreateToken(ctx, "read", "no-user", 0)
+	// The admin token mints as the admin identity (id 2).
+	admin := newTestClient(t, srv.URL, "admin-token")
+	tok, err := admin.CreateToken(ctx, "read", "as-admin")
 	require.NoError(t, err)
-	require.Equal(t, int64(0), m.mintUserFor(tok.ID))
+	require.Equal(t, int64(2), m.mintUserFor(tok.ID))
 
-	// A non-zero userID must be sent as the "user" field.
-	tok, err = c.CreateToken(ctx, "read", "bound", 7)
+	// A client authenticating with a service account's own (bootstrap) token
+	// mints a token owned by that account — the basis of per-user issuance.
+	m.addIdentity("svc-deploy-token", 7)
+	svc := newTestClient(t, srv.URL, "svc-deploy-token")
+	tok, err = svc.CreateToken(ctx, "read", "as-svc")
 	require.NoError(t, err)
 	require.Equal(t, int64(7), m.mintUserFor(tok.ID))
 }
@@ -132,11 +134,11 @@ func TestClient_tokenOwner(t *testing.T) {
 	c := newTestClient(t, srv.URL, "admin-token")
 	ctx := context.Background()
 
-	tok, err := c.CreateToken(ctx, "read", "owned", 7)
+	tok, err := c.CreateToken(ctx, "read", "owned")
 	require.NoError(t, err)
 	owner, err := c.tokenOwner(ctx, tok.ID)
 	require.NoError(t, err)
-	require.Equal(t, int64(7), owner)
+	require.Equal(t, int64(2), owner) // admin token mints as id 2
 
 	// A token that does not exist returns an error (non-200).
 	_, err = c.tokenOwner(ctx, 999999)
@@ -165,7 +167,7 @@ func TestClient_CreateToken_badAuth(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL, "the-wrong-token")
-	_, err := c.CreateToken(context.Background(), "read", "x", 0)
+	_, err := c.CreateToken(context.Background(), "read", "x")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "401")
 }
@@ -189,7 +191,7 @@ func TestClient_CreateToken_rejectsMissingOrZeroID(t *testing.T) {
 			defer srv.Close()
 
 			c := newTestClient(t, srv.URL, "admin-token")
-			_, err := c.CreateToken(context.Background(), "read", "vault-test", 0)
+			_, err := c.CreateToken(context.Background(), "read", "vault-test")
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "invalid token id")
 		})
