@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -47,6 +48,10 @@ func newClient(config *aapConfig) (*aapClient, error) {
 	if config.Address == "" {
 		return nil, errMissingAddress
 	}
+	address, err := validateAddress(config.Address)
+	if err != nil {
+		return nil, err
+	}
 
 	tlsConfig := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
@@ -65,10 +70,26 @@ func newClient(config *aapConfig) (*aapClient, error) {
 			Timeout:   defaultHTTPTimeout,
 			Transport: &http.Transport{TLSClientConfig: tlsConfig},
 		},
-		address:  normalizeAddress(config.Address),
+		address:  address,
 		basePath: normalizeBasePath(config.TokensAPIPath),
 		token:    config.Token,
 	}, nil
+}
+
+// validateAddress normalizes and rejects plaintext endpoints for bearer tokens.
+func validateAddress(address string) (string, error) {
+	normalized := normalizeAddress(address)
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return "", fmt.Errorf("invalid AAP address: %w", err)
+	}
+	if u.Scheme != "https" {
+		return "", fmt.Errorf("AAP address must use https")
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("AAP address must include a host")
+	}
+	return normalized, nil
 }
 
 // normalizeAddress strips any trailing slash from the configured address.
@@ -125,6 +146,9 @@ func (c *aapClient) CreateToken(ctx context.Context, scope, description string) 
 	}
 	if token.Token == "" {
 		return nil, fmt.Errorf("AAP returned an empty token value")
+	}
+	if token.ID <= 0 {
+		return nil, fmt.Errorf("AAP returned an invalid token id")
 	}
 	return &token, nil
 }

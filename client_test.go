@@ -2,6 +2,8 @@ package aap
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -31,6 +33,10 @@ func TestClient_newClient_validation(t *testing.T) {
 
 	_, err = newClient(&aapConfig{Address: "https://x", Token: "t", CACert: "not-a-pem"})
 	require.Error(t, err)
+
+	_, err = newClient(&aapConfig{Address: "http://x", Token: "t"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "https")
 }
 
 func TestClient_normalize(t *testing.T) {
@@ -80,4 +86,30 @@ func TestClient_CreateToken_badAuth(t *testing.T) {
 	_, err := c.CreateToken(context.Background(), "read", "x")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "401")
+}
+
+func TestClient_CreateToken_rejectsMissingOrZeroID(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"missing id", `{"token":"secret-token","scope":"read"}`},
+		{"zero id", `{"id":0,"token":"secret-token","scope":"read"}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			c := newTestClient(t, srv.URL, "admin-token")
+			_, err := c.CreateToken(context.Background(), "read", "vault-test")
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "invalid token id")
+		})
+	}
 }

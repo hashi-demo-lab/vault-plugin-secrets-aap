@@ -106,6 +106,74 @@ func TestCredentials_RevokeAfterLeasePersisted(t *testing.T) {
 	require.True(t, m.wasRevoked(tokenID), "revoke must work after JSON round-trip")
 }
 
+func TestCredentials_RevokeUsesOriginalConfigAfterRotation(t *testing.T) {
+	original := newMockAAP("token-a")
+	originalSrv := original.server(t)
+	defer originalSrv.Close()
+	rotated := newMockAAP("token-b")
+	rotatedSrv := rotated.server(t)
+	defer rotatedSrv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, originalSrv.URL, "token-a")
+	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "write", "ttl": "1h"})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/ci", Storage: s,
+	})
+	require.NoError(t, err)
+	tokenID, err := strconv.ParseInt(resp.Secret.InternalData["token_id"].(string), 10, 64)
+	require.NoError(t, err)
+
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"address":         rotatedSrv.URL,
+			"token":           "token-b",
+			"tokens_api_path": "/api/gateway/v1",
+			"skip_tls_verify": true,
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.RevokeOperation, Path: "creds/ci", Storage: s, Secret: resp.Secret,
+	})
+	require.NoError(t, err)
+	require.True(t, original.wasRevoked(tokenID), "revoke must use the config that minted the token")
+	require.False(t, rotated.wasRevoked(tokenID), "revoke must not be sent to the rotated config")
+}
+
+func TestCredentials_RevokeAfterConfigDeletedUsesLeaseConfig(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "read", "ttl": "1h"})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/ci", Storage: s,
+	})
+	require.NoError(t, err)
+	tokenID, err := strconv.ParseInt(resp.Secret.InternalData["token_id"].(string), 10, 64)
+	require.NoError(t, err)
+
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.DeleteOperation, Path: "config", Storage: s,
+	})
+	require.NoError(t, err)
+
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.RevokeOperation, Path: "creds/ci", Storage: s, Secret: resp.Secret,
+	})
+	require.NoError(t, err)
+	require.True(t, m.wasRevoked(tokenID))
+}
+
 func TestCredentials_UnknownRole(t *testing.T) {
 	m := newMockAAP("admin-token")
 	srv := m.server(t)

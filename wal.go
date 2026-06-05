@@ -23,8 +23,29 @@ const walRollbackMinAge = 5 * time.Minute
 // TokenID is a string so it survives the WAL's JSON round-trip without the
 // float64 precision loss an integer would suffer.
 type walToken struct {
-	TokenID string `json:"token_id"`
-	Role    string `json:"role"`
+	TokenID                 string `json:"token_id"`
+	Role                    string `json:"role"`
+	RevocationAddress       string `json:"revocation_address"`
+	RevocationToken         string `json:"revocation_token"`
+	RevocationTokensAPIPath string `json:"revocation_tokens_api_path"`
+	RevocationCACert        string `json:"revocation_ca_cert"`
+	RevocationSkipTLSVerify bool   `json:"revocation_skip_tls_verify"`
+}
+
+func newWALToken(tokenID, role string, config *aapConfig) *walToken {
+	token := &walToken{
+		TokenID: tokenID,
+		Role:    role,
+	}
+	if config == nil {
+		return token
+	}
+	token.RevocationAddress = config.Address
+	token.RevocationToken = config.Token
+	token.RevocationTokensAPIPath = config.TokensAPIPath
+	token.RevocationCACert = config.CACert
+	token.RevocationSkipTLSVerify = config.SkipTLSVerify
+	return token
 }
 
 // walRollback revokes the AAP token recorded by a WAL entry whose originating
@@ -48,7 +69,7 @@ func (b *aapBackend) walRollback(ctx context.Context, req *logical.Request, kind
 		return fmt.Errorf("invalid token_id %q in WAL: %w", idStr, err)
 	}
 
-	client, err := b.getClient(ctx, req.Storage)
+	client, err := b.revocationClient(ctx, req.Storage, m)
 	if err != nil {
 		return err
 	}

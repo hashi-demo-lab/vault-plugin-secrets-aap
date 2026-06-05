@@ -131,6 +131,7 @@ func (b *aapBackend) pathConfigWrite(ctx context.Context, req *logical.Request, 
 	}
 
 	createOperation := req.Operation == logical.CreateOperation
+	oldConfig := cloneConfig(config)
 	if config == nil {
 		if !createOperation {
 			return nil, errBackendNotConfigured
@@ -144,7 +145,9 @@ func (b *aapBackend) pathConfigWrite(ctx context.Context, req *logical.Request, 
 		return logical.ErrorResponse("address is required"), nil
 	}
 
+	tokenSupplied := false
 	if token, ok := data.GetOk("token"); ok {
+		tokenSupplied = true
 		config.Token = token.(string)
 	} else if createOperation {
 		return logical.ErrorResponse("token is required"), nil
@@ -164,6 +167,13 @@ func (b *aapBackend) pathConfigWrite(ctx context.Context, req *logical.Request, 
 		config.SkipTLSVerify = skip.(bool)
 	}
 
+	if !createOperation && !tokenSupplied && configConnectionChanged(oldConfig, config) {
+		return logical.ErrorResponse("token is required when changing AAP connection or TLS trust settings"), nil
+	}
+	if _, err := validateAddress(config.Address); err != nil {
+		return logical.ErrorResponse(err.Error()), nil
+	}
+
 	entry, err := logical.StorageEntryJSON(configStoragePath, config)
 	if err != nil {
 		return nil, err
@@ -176,6 +186,16 @@ func (b *aapBackend) pathConfigWrite(ctx context.Context, req *logical.Request, 
 	b.reset()
 
 	return nil, nil
+}
+
+func configConnectionChanged(before, after *aapConfig) bool {
+	if before == nil || after == nil {
+		return false
+	}
+	return normalizeAddress(before.Address) != normalizeAddress(after.Address) ||
+		normalizeBasePath(before.TokensAPIPath) != normalizeBasePath(after.TokensAPIPath) ||
+		before.CACert != after.CACert ||
+		before.SkipTLSVerify != after.SkipTLSVerify
 }
 
 // pathConfigDelete removes the configuration and resets the client.

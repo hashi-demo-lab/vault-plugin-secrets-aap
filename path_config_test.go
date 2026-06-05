@@ -44,10 +44,21 @@ func TestConfig_CRUD(t *testing.T) {
 	require.Equal(t, true, resp.Data["token_set"])
 	require.NotContains(t, resp.Data, "token", "token value must never be returned")
 
-	// Update just the address.
+	// Updating connection details without a fresh token would redirect the
+	// preserved privileged token, so it is rejected.
 	resp, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.UpdateOperation, Path: "config", Storage: s,
 		Data: map[string]interface{}{"address": "https://aap2.example.com"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.IsError())
+	require.Contains(t, resp.Error().Error(), "token is required")
+
+	// Supplying a token makes the endpoint rotation explicit.
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{"address": "https://aap2.example.com", "token": "rotated-secret"},
 	})
 	require.NoError(t, err)
 	require.False(t, resp != nil && resp.IsError())
@@ -55,7 +66,7 @@ func TestConfig_CRUD(t *testing.T) {
 	cfg, err := getConfig(ctx, s)
 	require.NoError(t, err)
 	require.Equal(t, "https://aap2.example.com", cfg.Address)
-	require.Equal(t, "super-secret", cfg.Token, "token should survive a partial update")
+	require.Equal(t, "rotated-secret", cfg.Token)
 
 	// Delete.
 	_, err = b.HandleRequest(ctx, &logical.Request{
@@ -97,4 +108,28 @@ func TestConfig_CreateRequiresAddressAndToken(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	require.True(t, resp.IsError(), "missing token should error")
+
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{"token": "t"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.IsError(), "missing address should error")
+}
+
+func TestConfig_RejectsPlainHTTPAddress(t *testing.T) {
+	b, s := getTestBackend(t)
+
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.CreateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"address": "http://aap.example.com",
+			"token":   "t",
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.IsError())
+	require.Contains(t, resp.Error().Error(), "https")
 }

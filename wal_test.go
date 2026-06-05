@@ -2,6 +2,7 @@ package aap
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"testing"
 
@@ -35,6 +36,44 @@ func TestWALRollback_RevokesOrphanedToken(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, m.wasRevoked(tok.ID))
 	require.Equal(t, 0, m.liveCount())
+}
+
+func TestWALRollback_UsesOriginalConfigAfterRotation(t *testing.T) {
+	original := newMockAAP("token-a")
+	originalSrv := original.server(t)
+	defer originalSrv.Close()
+	rotated := newMockAAP("token-b")
+	rotatedSrv := rotated.server(t)
+	defer rotatedSrv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, originalSrv.URL, "token-a")
+
+	tok, revocationConfig, err := b.createToken(ctx, s, &aapRoleEntry{Scope: "read"})
+	require.NoError(t, err)
+	require.Equal(t, 1, original.liveCount())
+
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"address":         rotatedSrv.URL,
+			"token":           "token-b",
+			"tokens_api_path": "/api/gateway/v1",
+			"skip_tls_verify": true,
+		},
+	})
+	require.NoError(t, err)
+
+	raw, err := json.Marshal(newWALToken(strconv.FormatInt(tok.ID, 10), "ci", revocationConfig))
+	require.NoError(t, err)
+	var data map[string]interface{}
+	require.NoError(t, json.Unmarshal(raw, &data))
+
+	err = b.walRollback(ctx, &logical.Request{Storage: s}, walTypeToken, data)
+	require.NoError(t, err)
+	require.True(t, original.wasRevoked(tok.ID), "rollback must use the config that minted the token")
+	require.False(t, rotated.wasRevoked(tok.ID), "rollback must not be sent to the rotated config")
 }
 
 // TestWALRollback_Idempotent confirms rolling back an already-gone token is fine

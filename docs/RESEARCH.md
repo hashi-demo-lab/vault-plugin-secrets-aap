@@ -105,7 +105,7 @@ lease so Vault is the source of truth for revocation.
 
 ## 3. AAP API surface the plugin wraps
 
-Only two calls matter (see `../<aap-token-notes>` or the earlier session notes for detail):
+Only two calls matter (see `../ARCHITECTURE.md` for the verified API details):
 
 **Mint** — authenticate with the engine's configured admin user/password:
 

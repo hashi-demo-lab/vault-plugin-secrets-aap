@@ -33,8 +33,16 @@ func (b *aapBackend) aapToken() *framework.Secret {
 				Description: "The AAP OAuth2 token value.",
 			},
 			"token_id": {
-				Type:        framework.TypeString,
+				Type:        framework.TypeInt64,
 				Description: "The AAP token ID (used for revocation).",
+			},
+			"scope": {
+				Type:        framework.TypeString,
+				Description: "The OAuth2 scope granted to the token.",
+			},
+			"expires": {
+				Type:        framework.TypeString,
+				Description: "The AAP token's upstream expiration timestamp.",
 			},
 		},
 		Revoke: b.tokenRevoke,
@@ -44,26 +52,29 @@ func (b *aapBackend) aapToken() *framework.Secret {
 
 // createToken mints a new AAP token for the given role using the configured
 // client.
-func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *aapRoleEntry) (*aapToken, error) {
-	client, err := b.getClient(ctx, s)
+func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *aapRoleEntry) (*aapToken, *aapConfig, error) {
+	config, err := getConfig(ctx, s)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	if config == nil {
+		return nil, nil, errBackendNotConfigured
+	}
+
+	client, err := newClient(config)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	token, err := client.CreateToken(ctx, role.Scope, role.Description)
 	if err != nil {
-		return nil, fmt.Errorf("error creating AAP token: %w", err)
+		return nil, nil, fmt.Errorf("error creating AAP token: %w", err)
 	}
-	return token, nil
+	return token, cloneConfig(config), nil
 }
 
 // tokenRevoke deletes the AAP token recorded in the lease's internal data.
 func (b *aapBackend) tokenRevoke(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
-	client, err := b.getClient(ctx, req.Storage)
-	if err != nil {
-		return nil, fmt.Errorf("error getting client during revoke: %w", err)
-	}
-
 	idRaw, ok := req.Secret.InternalData["token_id"]
 	if !ok {
 		return nil, errors.New("token_id missing from secret internal data")
@@ -74,10 +85,26 @@ func (b *aapBackend) tokenRevoke(ctx context.Context, req *logical.Request, _ *f
 		return nil, err
 	}
 
+	client, err := b.revocationClient(ctx, req.Storage, req.Secret.InternalData)
+	if err != nil {
+		return nil, fmt.Errorf("error getting client during revoke: %w", err)
+	}
+
 	if err := client.RevokeToken(ctx, id); err != nil {
 		return nil, fmt.Errorf("error revoking AAP token %d: %w", id, err)
 	}
 	return nil, nil
+}
+
+func (b *aapBackend) revocationClient(ctx context.Context, s logical.Storage, data map[string]interface{}) (*aapClient, error) {
+	config, ok, err := configFromRevocationData(data)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return newClient(config)
+	}
+	return b.getClient(ctx, s)
 }
 
 // tokenRenew extends the lease using the originating role's TTL/MaxTTL. The

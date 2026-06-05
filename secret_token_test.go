@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,4 +43,14 @@ func TestCoerceTokenID(t *testing.T) {
 			require.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestAAPTokenSecretSchemaMatchesResponse(t *testing.T) {
+	b, _ := getTestBackend(t)
+	fields := b.aapToken().Fields
+
+	require.Equal(t, framework.TypeString, fields["token"].Type)
+	require.Equal(t, framework.TypeInt64, fields["token_id"].Type)
+	require.Equal(t, framework.TypeString, fields["scope"].Type)
+	require.Equal(t, framework.TypeString, fields["expires"].Type)
 }

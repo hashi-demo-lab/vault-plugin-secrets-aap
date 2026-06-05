@@ -50,6 +50,7 @@ func backend() *aapBackend {
 			SealWrapStorage: []string{
 				"config",
 				"role/*",
+				framework.WALPrefix,
 			},
 			// WAL entries are local cleanup state; don't replicate them.
 			LocalStorage: []string{
