@@ -80,6 +80,25 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 	if err != nil {
 		return nil, nil, fmt.Errorf("error creating AAP token: %w", err)
 	}
+
+	// Per-user safety guard. AAP mints a token for the *authenticating* identity;
+	// some versions (e.g. the 2.5 gateway) silently ignore the requested "user"
+	// field rather than rejecting it, which would misattribute the token. When a
+	// role targets a user, confirm the minted token is actually owned by that
+	// user; if not, revoke it and fail loudly rather than hand back a token that
+	// carries the wrong identity's RBAC.
+	if userID > 0 {
+		owner, verr := client.tokenOwner(ctx, token.ID)
+		if verr != nil {
+			_ = client.RevokeToken(ctx, token.ID)
+			return nil, nil, fmt.Errorf("could not verify owner of token minted for %q: %w", role.Username, verr)
+		}
+		if owner != userID {
+			_ = client.RevokeToken(ctx, token.ID)
+			return nil, nil, fmt.Errorf("AAP did not honor per-user issuance: token was minted for user id %d, not %q (id %d). This AAP version may not support minting on behalf of another user with the configured token", owner, role.Username, userID)
+		}
+	}
+
 	return token, cloneConfig(config), nil
 }
 

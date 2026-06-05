@@ -39,7 +39,13 @@ type mockAAP struct {
 	created   int              // count of successful mints
 	wantAuth  string           // expected bearer token
 	users     map[string]int64 // username -> id, for ResolveUserID lookups
-	mintUsers map[int64]int64  // token id -> "user" field sent at mint (0 if none)
+	mintUsers map[int64]int64  // token id -> owner id recorded at mint
+
+	// forceOwner, when non-zero, makes the mock ignore the requested "user" field
+	// and record this id as the owner instead — reproducing AAP 2.5 gateway
+	// behavior, where the user field is silently ignored and the token is owned by
+	// the authenticating identity.
+	forceOwner int64
 }
 
 func newMockAAP(bearer string) *mockAAP {
@@ -144,7 +150,12 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		id := m.nextID
 		m.nextID++
 		m.live[id] = body.Scope
-		m.mintUsers[id] = body.User
+		owner := body.User
+		if m.forceOwner != 0 {
+			// Reproduce AAP 2.5: ignore the requested user, own by the caller.
+			owner = m.forceOwner
+		}
+		m.mintUsers[id] = owner
 		m.created++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)

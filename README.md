@@ -83,27 +83,33 @@ vault lease revoke <lease_id>
 | `ttl` | mount default | lease TTL for minted tokens |
 | `max_ttl` | mount default | maximum lease TTL |
 
-#### Per-user token issuance (`username`)
+#### Per-user token issuance (`username`) — limited; see status below
 
 By default every token is minted as the engine's own configured identity, so it carries that
-identity's RBAC. Set `username` to mint tokens **on behalf of a specific AAP user/service
-account** instead — the engine resolves the name to its id (`GET {base}/users/?username=`)
-and includes `user` in the mint request, so the token inherits **that** user's RBAC and audit
-attribution:
+identity's RBAC. The intent of `username` is to mint **on behalf of a specific AAP user/service
+account** — the engine resolves the name to its id (`GET {base}/users/?username=`) and requests
+that owner on the mint, so the token would inherit **that** user's RBAC and audit attribution.
 
 ```bash
-vault write aap/role/deploy scope=write username="svc-deploy"
-vault read  aap/creds/deploy   # token owned by svc-deploy, not the engine identity
+vault write aap/role/deploy scope=read username="svc-deploy"
+vault read  aap/creds/deploy
 ```
 
-Requirements and notes:
-- The `config` token must be privileged enough to mint tokens for other users (e.g. a
-  superuser or an org admin over the target accounts).
-- Verified on the **AAP 2.5 gateway** (`/api/gateway/v1`), where token ownership is set via
-  the `user` field on `POST .../tokens/`. On 2.5 the `users/{id}/personal_tokens/`
-  sub-resource is read-only.
-- Revocation is unchanged — token IDs are global.
-- Leave `username` empty to keep the original mint-as-engine behavior.
+**Status / important limitation.** On the **AAP 2.5 gateway** (`/api/gateway/v1`) there is no
+admin-token API path to mint a token owned by another user: the `user` field on
+`POST .../tokens/` is **silently ignored** (the token is owned by the caller), the
+`users/{id}/personal_tokens/` sub-resource is read-only, and the controller API exposes no
+token endpoints. A token always belongs to whoever authenticates.
+
+To avoid misattribution, the engine **verifies ownership after minting**: when `username` is
+set, it confirms the new token is actually owned by that user and, if not, **revokes the token
+and returns an error** rather than handing back a token with the wrong identity. As a result,
+on AAP 2.5 a role with `username` set will **fail with a clear error** — it never issues a
+mis-owned token. Delivering real per-user issuance requires a per-user-credentials design
+(the engine authenticating as the target identity); tracked in
+[issue #3](https://github.com/hashi-demo-lab/vault-plugin-secrets-aap/issues/3).
+
+Leave `username` empty for the supported mint-as-engine behavior.
 
 ## Lease model: renewable (strategy A — the Vault norm)
 

@@ -68,6 +68,32 @@ func TestCredentials_PerUserMint(t *testing.T) {
 	require.Equal(t, int64(0), m.mintUserFor(plainID))
 }
 
+// TestCredentials_PerUserMint_OwnershipGuard reproduces AAP 2.5 gateway behavior
+// (the "user" field is silently ignored, so the token is owned by the calling
+// identity). The engine must detect the mismatch, revoke the misattributed
+// token, and fail loudly rather than hand back a token with the wrong identity.
+func TestCredentials_PerUserMint_OwnershipGuard(t *testing.T) {
+	m := newMockAAP("admin-token")
+	m.forceOwner = 2 // mint always owned by id 2 (the caller), ignoring the user field
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	testRoleCreate(t, b, s, "deploy", map[string]interface{}{
+		"scope": "read", "username": "svc-deploy", // resolves to id 7
+	})
+
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/deploy", Storage: s,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "did not honor per-user issuance")
+	require.Equal(t, 0, m.liveCount(), "the misattributed token must be revoked, not leaked")
+}
+
 // TestCredentials_PerUserMint_UnknownUser surfaces a clear error when the role's
 // username does not resolve, and mints nothing.
 func TestCredentials_PerUserMint_UnknownUser(t *testing.T) {
@@ -356,10 +382,13 @@ func TestAcceptance_LiveAAP(t *testing.T) {
 	require.NoError(t, err, "live revoke must succeed")
 }
 
-// TestAcceptance_PerUserMintLiveAAP confirms, against a real AAP, that a role
-// with a username mints a token actually owned by that user — i.e. the gateway
-// accepts the "user" field on POST. Opt-in: set TEST_AAP_USERNAME to a real AAP
-// user/service account the configured token is privileged enough to mint for.
+// TestAcceptance_PerUserMintLiveAAP asserts the per-user safety invariant against
+// a real AAP: a role with a username must EITHER mint a token genuinely owned by
+// that user, OR fail loudly — it must never silently hand back a token owned by
+// the engine's own identity. On the AAP 2.5 gateway the "user" field is ignored,
+// so the engine's ownership guard makes this return an error (the expected,
+// correct outcome there). On an AAP that honors on-behalf minting it succeeds.
+// Opt-in: set TEST_AAP_USERNAME to a real AAP user.
 //
 //	VAULT_ACC=1 TEST_AAP_ADDRESS=... TEST_AAP_TOKEN=... TEST_AAP_USERNAME=svc-deploy \
 //	  go test -run TestAcceptance_PerUserMint -v
@@ -407,11 +436,20 @@ func TestAcceptance_PerUserMintLiveAAP(t *testing.T) {
 	resp, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.ReadOperation, Path: "creds/peruser", Storage: s,
 	})
-	require.NoError(t, err)
+
+	if err != nil {
+		// AAP did not honor on-behalf minting (e.g. 2.5 gateway ignores the user
+		// field). The ownership guard must have caught it and revoked — a token
+		// owned by the wrong identity must never be issued.
+		require.Contains(t, err.Error(), "did not honor per-user issuance",
+			"per-user mint failed, but not via the ownership guard: %v", err)
+		t.Logf("per-user issuance not supported by this AAP; engine correctly refused: %v", err)
+		return
+	}
+
+	// AAP honored it: the token must genuinely be owned by the requested user.
 	require.NotNil(t, resp)
 	tokenID := resp.Data["token_id"].(int64)
-
-	// Read the token back from AAP and assert it is owned by the requested user.
 	gotUserID, err := client.tokenOwner(ctx, tokenID)
 	require.NoError(t, err)
 	require.Equal(t, wantUserID, gotUserID, "minted token must be owned by %q", username)
