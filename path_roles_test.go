@@ -74,11 +74,11 @@ func TestRole_TTLCannotExceedMaxTTL(t *testing.T) {
 	require.Contains(t, resp.Error().Error(), "cannot exceed max_ttl")
 }
 
-func TestRole_DefaultScopeIsWrite(t *testing.T) {
+func TestRole_DefaultScopeIsRead(t *testing.T) {
 	b, s := getTestBackend(t)
 	testRoleCreate(t, b, s, "defaulted", map[string]interface{}{})
 
 	role, err := b.getRole(context.Background(), s, "defaulted")
 	require.NoError(t, err)
-	require.Equal(t, "write", role.Scope)
+	require.Equal(t, "read", role.Scope, "default scope should be least-privilege 'read'")
 }

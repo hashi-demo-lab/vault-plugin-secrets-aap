@@ -3,6 +3,7 @@ package aap
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/hashicorp/vault/sdk/framework"
@@ -50,8 +51,8 @@ func pathRole(b *aapBackend) []*framework.Path {
 				},
 				"scope": {
 					Type:        framework.TypeString,
-					Default:     "write",
-					Description: "OAuth2 scope granted to minted tokens: 'read' or 'write'.",
+					Default:     "read",
+					Description: "OAuth2 scope granted to minted tokens: 'read' or 'write'. Defaults to least-privilege 'read'.",
 				},
 				"description": {
 					Type:        framework.TypeString,
@@ -113,6 +114,8 @@ func (b *aapBackend) pathRolesList(ctx context.Context, req *logical.Request, _ 
 	if err != nil {
 		return nil, err
 	}
+	// Storage does not guarantee order; sort for a stable API response.
+	sort.Strings(entries)
 	return logical.ListResponse(entries), nil
 }
 
