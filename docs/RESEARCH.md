@@ -177,8 +177,8 @@ func (b *aapBackend) aapToken() *framework.Secret {
         Fields: map[string]*framework.FieldSchema{
             "token": {Type: framework.TypeString, Description: "AAP OAuth2 token"},
         },
-        Revoke: b.tokenRevoke, // calls DELETE /api/v2/tokens/{id}/
-        // Renew omitted (nil) — non-renewable by design; see §6.
+        Revoke: b.tokenRevoke,
+        Renew:  b.tokenRenew, // renewable lease (strategy A); see §6
     }
 }
 ```
@@ -258,25 +258,32 @@ Kubernetes, bake the plugin into a sidecar/init image or a custom Vault image.
 
 ---
 
-## 6. Design decision: renewal semantics — **DECIDED: (C) non-renewable**
+## 6. Design decision: renewal semantics — **SHIPPED: (A) renewable**
 
-The one genuinely opinionated choice is **renewal semantics**. AAP OAuth2 tokens **cannot
-have their `expires` extended in place**; the API has no "renew token" call. The options
-were:
+> This section originally concluded (C) non-renewable. It was **reversed during the build**
+> — see the note at the top of this file. The shipped engine uses **(A) renewable**;
+> [`../ARCHITECTURE.md`](../ARCHITECTURE.md) is the authoritative record.
 
-- **(A) No-op renew up to `max_ttl`** — Vault extends the lease but the *same* AAP token
-  keeps working. Simple, but the AAP token's own `expires` may end up shorter than the
-  lease. Risk: token outlives what AAP thinks.
+AAP OAuth2 tokens **cannot have their `expires` extended in place**; the API has no "renew
+token" call. The options were:
+
+- **✅ (A) No-op renew up to `max_ttl`** *(shipped)* — Vault extends the lease and the
+  *same* AAP token keeps working. The original objection was that the AAP token's own
+  `expires` might fall short of the lease — but live probing showed AAP tokens default to a
+  **~1-year expiry**, comfortably longer than any reasonable `max_ttl`, so the Vault lease
+  is the binding clock and this is safe. This is also how Vault's first-party dynamic
+  engines (database, AWS, Terraform Cloud) behave, so it's the least-surprising model.
 - **(B) Re-mint on renew** — `Renew` mints a new AAP token, revokes the old one, swaps it
   in. Clean rotation, but the caller's cached token string changes and API churn doubles.
-- **✅ (C) Disallow renew** *(chosen)* — `Renew: nil`; callers request a fresh `creds/`
-  read each time. Most "dynamic" and auditable: every token is short-lived with a clean
-  1:1 mint → use → revoke trail and no in-place extension. Best default for CI.
+- **(C) Disallow renew** — `Renew: nil`; callers request a fresh `creds/` read each time.
+  Maximally auditable, but given the ~1-year token expiry it adds churn for no real
+  security gain over (A) bounded by `max_ttl`. (This was the initial lean before the
+  expiry finding.)
 
-This is implemented in [`secret_token.go`](./secret_token.go): `aapToken()` sets
-`Renew: nil` and there is no `tokenRenew` function. To use a token past its TTL, the
-caller simply re-reads `aap/creds/<role>`. If requirements change, re-add a `Renew`
-callback and implement (A) or (B) there.
+Implemented in [`../secret_token.go`](../secret_token.go): `aapToken()` sets
+`Renew: b.tokenRenew`, which reloads the role and re-applies its `ttl`/`max_ttl`. Vault
+caps the lease at `max_ttl` measured from creation, so renew cannot extend a token
+indefinitely. To rotate the token value itself, re-read `aap/creds/<role>`.
 
 ---
 
