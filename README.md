@@ -173,6 +173,45 @@ make testacc
 The acceptance test mints a real token and revokes it; it is skipped unless `VAULT_ACC`
 is set. **Never commit `.env` or real tokens** — `.gitignore` blocks them.
 
+## Examples
+
+A runnable Terraform example (mount + config + role + dynamic read) lives in
+[`examples/terraform/`](./examples/terraform/).
+
+## Troubleshooting
+
+### Choosing `tokens_api_path` (AAP 2.5 gateway vs 2.4 controller)
+
+The engine talks to AAP's REST API at `<address><tokens_api_path>/tokens/`. Pick the path
+for your AAP version:
+
+| AAP version | `tokens_api_path` | Notes |
+|-------------|-------------------|-------|
+| 2.5+ (platform gateway) | `/api/gateway/v1` (default) | Token management lives on the gateway. |
+| 2.4 (automation controller) | `/api/controller/v2` | Legacy controller API. |
+
+Symptoms of the wrong path:
+- **`AAP connection verification failed ... HTTP 404`** on `vault write aap/config` — the
+  base path is wrong for this AAP version. Try the other value from the table.
+- **`HTTP 401`** on config write — the `token` is wrong or unprivileged, not a path issue.
+
+Unsure which you have? `GET <address>/api/gateway/v1/ping/` returns 200 on 2.5 gateways.
+
+### `token was minted for user id N, not "<user>"` on `creds/<role>`
+
+The role sets `username` but the minted token came back owned by someone else, so the engine
+revoked it. Causes:
+- The role has **no `bootstrap_token`** — without it the token is minted as the engine's own
+  identity. Set `bootstrap_token` to that user's own AAP token.
+- The `bootstrap_token` belongs to a **different** user than `username`. They must match.
+
+See [Per-user token issuance](#per-user-token-issuance-bootstrap_token--username).
+
+### `AAP user "<name>" not found` / `... is ambiguous`
+
+`username` did not resolve to exactly one AAP user via `GET <base>/users/?username=`. Check the
+exact username, and that the `config` token can list users.
+
 ## Status
 
 Verified end-to-end against AAP 4.8.0: unit + acceptance tests pass, `golangci-lint`

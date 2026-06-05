@@ -21,3 +21,7 @@ coverage.*
 .DS_Store
 .idea/
 .vscode/
+
+# Terraform example artifacts
+examples/terraform/.terraform/
+examples/terraform/.terraform.lock.hcl
