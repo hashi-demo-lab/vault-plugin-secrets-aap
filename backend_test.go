@@ -75,7 +75,12 @@ func (m *mockAAP) handleUsers(w http.ResponseWriter, r *http.Request) {
 
 	username := r.URL.Query().Get("username")
 	results := []map[string]interface{}{}
-	if id, ok := m.users[username]; ok {
+	if username == "ambiguous" {
+		// Two users sharing a name → ResolveUserID must reject as ambiguous.
+		results = append(results,
+			map[string]interface{}{"id": 11, "username": "ambiguous"},
+			map[string]interface{}{"id": 12, "username": "ambiguous"})
+	} else if id, ok := m.users[username]; ok {
 		results = append(results, map[string]interface{}{"id": id, "username": username})
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -109,6 +114,25 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"results": []interface{}{}})
+
+	case r.Method == http.MethodGet && suffix != "":
+		// Item read (tokenOwner) returns the token's owner.
+		idStr := strings.TrimSuffix(suffix, "/")
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.Error(w, `{"detail":"bad id"}`, http.StatusBadRequest)
+			return
+		}
+		scope, ok := m.live[id]
+		if !ok {
+			http.Error(w, `{"detail":"not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": id, "user": m.mintUsers[id], "scope": scope,
+		})
 
 	case r.Method == http.MethodPost && suffix == "":
 		var body struct {

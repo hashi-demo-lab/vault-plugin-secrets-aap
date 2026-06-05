@@ -51,6 +51,25 @@ func TestRole_CRUDAndList(t *testing.T) {
 	require.Nil(t, resp)
 }
 
+func TestRole_ExistenceCheck(t *testing.T) {
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	_, exists, err := b.HandleExistenceCheck(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "role/ci", Storage: s,
+	})
+	require.NoError(t, err)
+	require.False(t, exists)
+
+	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "read"})
+
+	_, exists, err = b.HandleExistenceCheck(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "role/ci", Storage: s,
+	})
+	require.NoError(t, err)
+	require.True(t, exists)
+}
+
 func TestRole_InvalidScopeRejected(t *testing.T) {
 	b, s := getTestBackend(t)
 	resp, err := b.HandleRequest(context.Background(), &logical.Request{

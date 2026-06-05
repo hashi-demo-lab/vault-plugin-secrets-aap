@@ -113,6 +113,52 @@ func TestClient_CreateToken_BindsUser(t *testing.T) {
 	require.Equal(t, int64(7), m.mintUserFor(tok.ID))
 }
 
+func TestClient_ResolveUserID_Ambiguous(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "admin-token")
+	_, err := c.ResolveUserID(context.Background(), "ambiguous")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ambiguous")
+}
+
+func TestClient_tokenOwner(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "admin-token")
+	ctx := context.Background()
+
+	tok, err := c.CreateToken(ctx, "read", "owned", 7)
+	require.NoError(t, err)
+	owner, err := c.tokenOwner(ctx, tok.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(7), owner)
+
+	// A token that does not exist returns an error (non-200).
+	_, err = c.tokenOwner(ctx, 999999)
+	require.Error(t, err)
+}
+
+func TestClient_VerifyToken_Errors(t *testing.T) {
+	// Wrong bearer → auth error.
+	m := newMockAAP("right")
+	srv := m.server(t)
+	c := newTestClient(t, srv.URL, "wrong")
+	err := c.VerifyToken(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "rejected")
+
+	// Unreachable endpoint → transport error.
+	srv.Close()
+	err = c.VerifyToken(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "could not reach")
+}
+
 func TestClient_CreateToken_badAuth(t *testing.T) {
 	m := newMockAAP("the-right-token")
 	srv := m.server(t)

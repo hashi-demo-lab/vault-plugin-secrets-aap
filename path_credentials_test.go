@@ -12,6 +12,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestRevokeHelpers covers the failure-path revoke helpers used when a request
+// fails after minting (they build a fresh client from the snapshot config).
+func TestRevokeHelpers(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+	ctx := context.Background()
+
+	cfg := &aapConfig{Address: srv.URL, Token: "admin-token", TokensAPIPath: "/api/gateway/v1", SkipTLSVerify: true}
+	c, err := newClient(cfg)
+	require.NoError(t, err)
+
+	tok, err := c.CreateToken(ctx, "read", "to-revoke", 0)
+	require.NoError(t, err)
+	require.NoError(t, revokeWithConfig(ctx, cfg, tok.ID))
+	require.True(t, m.wasRevoked(tok.ID))
+
+	// Best-effort revoke of an already-gone token is silent (idempotent 404).
+	revokeBestEffort(ctx, cfg, tok.ID)
+}
+
 // TestCredentials_PerUserMint verifies that a role with a username mints a token
 // bound to that AAP user (resolved username -> id, sent as the "user" field),
 // while a role without a username mints as the engine identity.
