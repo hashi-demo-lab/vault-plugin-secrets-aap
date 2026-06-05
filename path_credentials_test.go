@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -42,7 +43,8 @@ func TestCredentials_MintRenewRevoke(t *testing.T) {
 	require.Equal(t, 8*time.Hour, resp.Secret.MaxTTL)
 	require.Equal(t, 1, m.liveCount())
 
-	tokenID := resp.Secret.InternalData["token_id"].(int64)
+	tokenID, err := strconv.ParseInt(resp.Secret.InternalData["token_id"].(string), 10, 64)
+	require.NoError(t, err)
 	require.Equal(t, "ci", resp.Secret.InternalData["role"])
 
 	// Renew → same token, lease extended.
@@ -83,15 +85,18 @@ func TestCredentials_RevokeAfterLeasePersisted(t *testing.T) {
 		Operation: logical.ReadOperation, Path: "creds/ci", Storage: s,
 	})
 	require.NoError(t, err)
-	tokenID := resp.Secret.InternalData["token_id"].(int64)
+	tokenIDStr := resp.Secret.InternalData["token_id"].(string)
+	tokenID, err := strconv.ParseInt(tokenIDStr, 10, 64)
+	require.NoError(t, err)
 
 	// Round-trip InternalData through JSON, as Vault does when persisting leases.
 	raw, err := json.Marshal(resp.Secret.InternalData)
 	require.NoError(t, err)
 	var reloaded map[string]interface{}
 	require.NoError(t, json.Unmarshal(raw, &reloaded))
-	_, isFloat := reloaded["token_id"].(float64)
-	require.True(t, isFloat, "JSON round-trip should yield float64 token_id")
+	gotID, isString := reloaded["token_id"].(string)
+	require.True(t, isString, "token_id is stored as a string and survives the round-trip exactly")
+	require.Equal(t, tokenIDStr, gotID)
 	resp.Secret.InternalData = reloaded
 
 	_, err = b.HandleRequest(ctx, &logical.Request{

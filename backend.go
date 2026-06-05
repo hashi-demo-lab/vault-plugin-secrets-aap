@@ -51,6 +51,10 @@ func backend() *aapBackend {
 				"config",
 				"role/*",
 			},
+			// WAL entries are local cleanup state; don't replicate them.
+			LocalStorage: []string{
+				framework.WALPrefix,
+			},
 		},
 		Paths: framework.PathAppend(
 			pathRole(&b),
@@ -62,8 +66,10 @@ func backend() *aapBackend {
 		Secrets: []*framework.Secret{
 			b.aapToken(),
 		},
-		BackendType: logical.TypeLogical,
-		Invalidate:  b.invalidate,
+		BackendType:       logical.TypeLogical,
+		Invalidate:        b.invalidate,
+		WALRollback:       b.walRollback,
+		WALRollbackMinAge: walRollbackMinAge,
 	}
 
 	return &b

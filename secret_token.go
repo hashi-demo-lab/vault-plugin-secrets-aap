@@ -2,8 +2,10 @@ package aap
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
@@ -105,22 +107,27 @@ func (b *aapBackend) tokenRenew(ctx context.Context, req *logical.Request, _ *fr
 	return resp, nil
 }
 
-// coerceTokenID normalizes the token ID out of internal data, which may be a
-// float64 (JSON round-trip), int64, or string depending on the code path.
+// coerceTokenID normalizes the token ID out of internal data. The engine stores
+// it as a string so the lease's JSON round-trip preserves it exactly; the other
+// cases are defensive (e.g. leases written before that change, where a JSON
+// number decodes to float64).
 func coerceTokenID(raw interface{}) (int64, error) {
 	switch v := raw.(type) {
+	case string:
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid token_id %q: %w", v, err)
+		}
+		return id, nil
+	case json.Number:
+		return v.Int64()
 	case int64:
 		return v, nil
 	case int:
 		return int64(v), nil
 	case float64:
+		// Legacy numeric form; exact for AAP-scale ids (well under 2^53).
 		return int64(v), nil
-	case string:
-		var id int64
-		if _, err := fmt.Sscan(v, &id); err != nil {
-			return 0, fmt.Errorf("invalid token_id %q: %w", v, err)
-		}
-		return id, nil
 	default:
 		return 0, fmt.Errorf("unexpected token_id type %T", raw)
 	}

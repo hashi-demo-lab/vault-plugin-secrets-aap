@@ -114,7 +114,17 @@ re-applies `ttl`/`max_ttl`; it returns an error if the role was deleted.
 ### Revocation
 On lease expiry or explicit revoke, `tokenRevoke` reads `token_id` from the lease's
 `InternalData` and calls AAP's delete endpoint. Revocation is **idempotent**: a `404`
-(token already gone) is treated as success so Vault retries converge.
+(token already gone) is treated as success so Vault retries converge. The `token_id` is
+stored as a **string** so it survives the lease's JSON round-trip exactly (a numeric id
+would decode back as `float64` and lose precision above 2^53).
+
+### Orphaned-token cleanup (WAL)
+Minting is wrapped in a Vault **write-ahead log** entry (`wal.go`): the token id is
+recorded before the leased response is returned and the WAL is deleted on success. If the
+request fails after the token is created in AAP but before the lease is durably stored,
+the periodic `walRollback` (min age 5m) revokes the orphaned token. On the failure paths
+where no lease will be issued, the engine also best-effort revokes immediately. This
+matches the pattern used by Vault's first-party dynamic engines (AWS, Terraform Cloud).
 
 ### Error Handling
 - Unconfigured backend → `errBackendNotConfigured`.
@@ -129,6 +139,8 @@ On lease expiry or explicit revoke, `tokenRevoke` reads `token_id` from the leas
 - Minted token secret values are returned **once** and held only under a Vault lease.
 - `skip_tls_verify=true` is insecure; production should configure `ca_cert` instead.
 - Least privilege: roles fix `scope`, so a `read` role cannot mint `write` tokens.
+- No orphaned credentials: a WAL rollback revokes any token created in AAP whose lease was
+  never durably stored (see *Orphaned-token cleanup* above).
 
 ## Completion Checklist
 

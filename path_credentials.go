@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
@@ -53,6 +54,11 @@ func (b *aapBackend) pathCredentialsRead(ctx context.Context, req *logical.Reque
 }
 
 // createCreds mints the token and assembles the leased secret response.
+//
+// A WAL entry is written around the mint so that if the request fails after the
+// token is created in AAP but before the lease is durably stored, the periodic
+// WAL rollback revokes the orphaned token. On success the WAL is removed before
+// returning, because the lease itself then carries the token ID for revocation.
 func (b *aapBackend) createCreds(ctx context.Context, req *logical.Request, roleName string, role *aapRoleEntry) (*logical.Response, error) {
 	token, err := b.createToken(ctx, req.Storage, role)
 	if err != nil {
@@ -62,8 +68,22 @@ func (b *aapBackend) createCreds(ctx context.Context, req *logical.Request, role
 		return nil, errors.New("error creating AAP token: nil token returned")
 	}
 
+	tokenIDStr := strconv.FormatInt(token.ID, 10)
+
+	walID, err := framework.PutWAL(ctx, req.Storage, walTypeToken, &walToken{
+		TokenID: tokenIDStr,
+		Role:    roleName,
+	})
+	if err != nil {
+		// Could not record the rollback intent; revoke now so we don't orphan
+		// the token, then surface the failure.
+		b.revokeBestEffort(ctx, req.Storage, token.ID)
+		return nil, fmt.Errorf("failed to write WAL for minted token: %w", err)
+	}
+
 	// The first map is returned to the caller; the second (internal) carries
-	// the data Revoke/Renew need and is never exposed.
+	// the data Revoke/Renew need and is never exposed. token_id is stored as a
+	// string so it survives the lease's JSON round-trip exactly.
 	resp := b.Secret(aapTokenType).Response(
 		map[string]interface{}{
 			"token":    token.Token,
@@ -72,7 +92,7 @@ func (b *aapBackend) createCreds(ctx context.Context, req *logical.Request, role
 			"expires":  token.Expires,
 		},
 		map[string]interface{}{
-			"token_id": token.ID,
+			"token_id": tokenIDStr,
 			"role":     roleName,
 		},
 	)
@@ -80,7 +100,23 @@ func (b *aapBackend) createCreds(ctx context.Context, req *logical.Request, role
 	resp.Secret.TTL = role.TTL
 	resp.Secret.MaxTTL = role.MaxTTL
 
+	// The lease now owns revocation; drop the WAL safety net.
+	if err := framework.DeleteWAL(ctx, req.Storage, walID); err != nil {
+		b.revokeBestEffort(ctx, req.Storage, token.ID)
+		return nil, fmt.Errorf("failed to commit WAL for minted token: %w", err)
+	}
+
 	return resp, nil
+}
+
+// revokeBestEffort attempts to revoke a token, ignoring errors. Used on failure
+// paths where the caller will not receive a lease, to avoid orphaning a token.
+func (b *aapBackend) revokeBestEffort(ctx context.Context, s logical.Storage, id int64) {
+	client, err := b.getClient(ctx, s)
+	if err != nil {
+		return
+	}
+	_ = client.RevokeToken(ctx, id)
 }
 
 const (

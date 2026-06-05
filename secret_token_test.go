@@ -1,6 +1,7 @@
 package aap
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -19,8 +20,12 @@ func TestCoerceTokenID(t *testing.T) {
 	}{
 		{"int64", int64(42), 42, false},
 		{"int", 42, 42, false},
-		{"float64 (JSON round-trip)", float64(42), 42, false},
+		{"float64 (legacy JSON round-trip)", float64(42), 42, false},
 		{"string", "42", 42, false},
+		// Exactness above 2^53: a string round-trips precisely where a float64
+		// would corrupt the last digit (9007199254740993 -> ...992).
+		{"large string > 2^53", "9007199254740993", 9007199254740993, false},
+		{"json.Number", json.Number("12345"), 12345, false},
 		{"bad string", "not-a-number", 0, true},
 		{"unexpected type", []byte("42"), 0, true},
 		{"nil", nil, 0, true},
