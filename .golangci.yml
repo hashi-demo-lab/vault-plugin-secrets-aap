@@ -1,0 +1,44 @@
+# golangci-lint v2 configuration.
+# Run: make lint   (or: golangci-lint run)
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose # HTTP response bodies must be closed
+    - gosec # security analysis
+    - misspell # spelling in comments/strings
+    - revive # style/lint, exported-symbol docs
+    - unconvert # redundant type conversions
+    - unparam # unused function params
+    - whitespace # leading/trailing whitespace
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+    gosec:
+      excludes:
+        - G402 # TLS InsecureSkipVerify is an opt-in, documented config field
+        - G101 # false positives on help-text constants; no credentials are hardcoded
+  exclusions:
+    generated: lax
+    rules:
+      # Test files may use weaker crypto, ignore some errors, take liberties.
+      - path: _test\.go
+        linters:
+          - gosec
+          - unparam
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/hashi-demo-lab/vault-plugin-secrets-aap
