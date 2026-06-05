@@ -1,0 +1,23 @@
+# Build output
+/vault/plugins/
+/bin/
+vault-plugin-secrets-aap
+
+# Secrets — NEVER commit. Acceptance tests read these from the environment.
+.env
+*.env
+!.env.example
+*.pem
+*.key
+*-token*.txt
+
+# Go
+*.test
+*.out
+coverage.*
+/dist/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
