@@ -2,6 +2,7 @@ package aap
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -62,6 +63,42 @@ func TestCredentials_MintRenewRevoke(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, m.wasRevoked(tokenID))
 	require.Equal(t, 0, m.liveCount())
+}
+
+// TestCredentials_RevokeAfterLeasePersisted simulates Vault persisting a lease
+// and reloading it: the secret's InternalData is round-tripped through JSON
+// (turning token_id into a float64) before revoke. This is the real production
+// path that a purely in-memory test would miss.
+func TestCredentials_RevokeAfterLeasePersisted(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "write", "ttl": "1h"})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/ci", Storage: s,
+	})
+	require.NoError(t, err)
+	tokenID := resp.Secret.InternalData["token_id"].(int64)
+
+	// Round-trip InternalData through JSON, as Vault does when persisting leases.
+	raw, err := json.Marshal(resp.Secret.InternalData)
+	require.NoError(t, err)
+	var reloaded map[string]interface{}
+	require.NoError(t, json.Unmarshal(raw, &reloaded))
+	_, isFloat := reloaded["token_id"].(float64)
+	require.True(t, isFloat, "JSON round-trip should yield float64 token_id")
+	resp.Secret.InternalData = reloaded
+
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.RevokeOperation, Path: "creds/ci", Storage: s, Secret: resp.Secret,
+	})
+	require.NoError(t, err)
+	require.True(t, m.wasRevoked(tokenID), "revoke must work after JSON round-trip")
 }
 
 func TestCredentials_UnknownRole(t *testing.T) {

@@ -80,6 +80,32 @@ vault lease revoke <lease_id>
 | `ttl` | mount default | lease TTL for minted tokens |
 | `max_ttl` | mount default | maximum lease TTL |
 
+## Lease model: renewable (strategy A — the Vault norm)
+
+Tokens are issued under **renewable** Vault leases, the standard model for Vault dynamic
+secrets:
+
+- **Read `creds/:name`** → mints a fresh AAP token and returns it under a lease whose TTL
+  comes from the role (`ttl`, capped at `max_ttl`).
+- **`vault lease renew`** → extends the lease and keeps the **same** AAP token. It does
+  *not* re-mint. AAP has no "extend token expiry" API, but AAP tokens default to a ~1-year
+  server-side expiry — comfortably longer than any sane `max_ttl` — so the **Vault lease
+  is the binding clock**, and renewing the lease is sufficient. `tokenRenew` reloads the
+  role and re-applies its TTLs; if the role was deleted, renew fails cleanly.
+- **`vault lease revoke`** (or lease/`max_ttl` expiry) → deletes the token in AAP
+  (`DELETE .../tokens/{id}/`). Revocation is **idempotent**: a `404` (already gone) counts
+  as success, so Vault's retries converge.
+
+> **Why renewable rather than non-renewable?** The original research
+> ([`docs/RESEARCH.md`](./docs/RESEARCH.md)) proposed *non-renewable* leases (strategy C),
+> on the assumption that an AAP token's own expiry might fall short of the lease. Live
+> probing showed AAP tokens default to a ~1-year expiry, eliminating that drift risk — so
+> the shipped engine uses **renewable leases (strategy A)**, matching how Vault's
+> first-party dynamic secrets engines (database, AWS, Terraform Cloud, …) behave. This is
+> the least-surprising model for operators: leases renew and revoke the way they expect,
+> and the token ID for revocation is carried in the lease's internal data (and survives the
+> JSON round-trip Vault performs when persisting leases).
+
 ## Development
 
 ```bash
