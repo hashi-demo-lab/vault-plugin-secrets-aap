@@ -162,6 +162,29 @@ func TestConfig_CreateRequiresAddressAndToken(t *testing.T) {
 	require.True(t, resp.IsError(), "missing address should error")
 }
 
+func TestConfig_ExistenceCheck(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	_, exists, err := b.HandleExistenceCheck(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "config", Storage: s,
+	})
+	require.NoError(t, err)
+	require.False(t, exists)
+
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+
+	_, exists, err = b.HandleExistenceCheck(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "config", Storage: s,
+	})
+	require.NoError(t, err)
+	require.True(t, exists)
+}
+
 func TestConfig_RejectsPlainHTTPAddress(t *testing.T) {
 	b, s := getTestBackend(t)
 

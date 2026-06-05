@@ -32,12 +32,20 @@ func getTestBackend(tb testing.TB) (*aapBackend, logical.Storage) {
 
 // mockAAP is an in-process stand-in for the AAP token API used by unit tests.
 type mockAAP struct {
-	mu       sync.Mutex
-	nextID   int64
-	live     map[int64]string // id -> scope, for tokens that still exist
-	revoked  map[int64]bool   // ids that received a DELETE
-	created  int              // count of successful mints
-	wantAuth string           // expected bearer token
+	mu        sync.Mutex
+	nextID    int64
+	live      map[int64]string // id -> scope, for tokens that still exist
+	revoked   map[int64]bool   // ids that received a DELETE
+	created   int              // count of successful mints
+	wantAuth  string           // expected bearer token
+	users     map[string]int64 // username -> id, for ResolveUserID lookups
+	mintUsers map[int64]int64  // token id -> owner id recorded at mint
+
+	// forceOwner, when non-zero, makes the mock ignore the requested "user" field
+	// and record this id as the owner instead — reproducing AAP 2.5 gateway
+	// behavior, where the user field is silently ignored and the token is owned by
+	// the authenticating identity.
+	forceOwner int64
 }
 
 func newMockAAP(bearer string) *mockAAP {
@@ -46,6 +54,9 @@ func newMockAAP(bearer string) *mockAAP {
 		live:     map[int64]string{},
 		revoked:  map[int64]bool{},
 		wantAuth: bearer,
+		// Service accounts a per-user role can target in tests.
+		users:     map[string]int64{"svc-deploy": 7, "svc-readonly": 8},
+		mintUsers: map[int64]int64{},
 	}
 }
 
@@ -54,7 +65,42 @@ func (m *mockAAP) server(tb testing.TB) *httptest.Server {
 	tb.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/gateway/v1/tokens/", m.handleTokens)
+	mux.HandleFunc("/api/gateway/v1/users/", m.handleUsers)
 	return httptest.NewTLSServer(mux)
+}
+
+// handleUsers serves the ?username= lookup ResolveUserID performs.
+func (m *mockAAP) handleUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Authorization") != "Bearer "+m.wantAuth {
+		http.Error(w, `{"detail":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	username := r.URL.Query().Get("username")
+	results := []map[string]interface{}{}
+	if username == "ambiguous" {
+		// Two users sharing a name → ResolveUserID must reject as ambiguous.
+		results = append(results,
+			map[string]interface{}{"id": 11, "username": "ambiguous"},
+			map[string]interface{}{"id": 12, "username": "ambiguous"})
+	} else if id, ok := m.users[username]; ok {
+		results = append(results, map[string]interface{}{"id": id, "username": username})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"count": len(results), "results": results,
+	})
+}
+
+// mintUserFor reports the "user" field the engine sent when minting a token id.
+func (m *mockAAP) mintUserFor(id int64) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mintUsers[id]
 }
 
 func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
@@ -75,15 +121,41 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"results": []interface{}{}})
 
+	case r.Method == http.MethodGet && suffix != "":
+		// Item read (tokenOwner) returns the token's owner.
+		idStr := strings.TrimSuffix(suffix, "/")
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.Error(w, `{"detail":"bad id"}`, http.StatusBadRequest)
+			return
+		}
+		scope, ok := m.live[id]
+		if !ok {
+			http.Error(w, `{"detail":"not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": id, "user": m.mintUsers[id], "scope": scope,
+		})
+
 	case r.Method == http.MethodPost && suffix == "":
 		var body struct {
 			Scope       string `json:"scope"`
 			Description string `json:"description"`
+			User        int64  `json:"user"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		id := m.nextID
 		m.nextID++
 		m.live[id] = body.Scope
+		owner := body.User
+		if m.forceOwner != 0 {
+			// Reproduce AAP 2.5: ignore the requested user, own by the caller.
+			owner = m.forceOwner
+		}
+		m.mintUsers[id] = owner
 		m.created++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
