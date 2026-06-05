@@ -77,10 +77,33 @@ vault lease revoke <lease_id>
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `scope` | `write` | `read` or `write` |
+| `scope` | `read` | `read` or `write` (defaults to least-privilege `read`) |
 | `description` | — | description applied to minted AAP tokens |
+| `username` | — | optional AAP user/service account to mint on behalf of (see below) |
 | `ttl` | mount default | lease TTL for minted tokens |
 | `max_ttl` | mount default | maximum lease TTL |
+
+#### Per-user token issuance (`username`)
+
+By default every token is minted as the engine's own configured identity, so it carries that
+identity's RBAC. Set `username` to mint tokens **on behalf of a specific AAP user/service
+account** instead — the engine resolves the name to its id (`GET {base}/users/?username=`)
+and includes `user` in the mint request, so the token inherits **that** user's RBAC and audit
+attribution:
+
+```bash
+vault write aap/role/deploy scope=write username="svc-deploy"
+vault read  aap/creds/deploy   # token owned by svc-deploy, not the engine identity
+```
+
+Requirements and notes:
+- The `config` token must be privileged enough to mint tokens for other users (e.g. a
+  superuser or an org admin over the target accounts).
+- Verified on the **AAP 2.5 gateway** (`/api/gateway/v1`), where token ownership is set via
+  the `user` field on `POST .../tokens/`. On 2.5 the `users/{id}/personal_tokens/`
+  sub-resource is read-only.
+- Revocation is unchanged — token IDs are global.
+- Leave `username` empty to keep the original mint-as-engine behavior.
 
 ## Lease model: renewable (strategy A — the Vault norm)
 

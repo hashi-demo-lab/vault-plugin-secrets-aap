@@ -2,6 +2,7 @@ package aap
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/hashicorp/vault/sdk/logical"
@@ -81,4 +82,39 @@ func TestRole_DefaultScopeIsRead(t *testing.T) {
 	role, err := b.getRole(context.Background(), s, "defaulted")
 	require.NoError(t, err)
 	require.Equal(t, "read", role.Scope, "default scope should be least-privilege 'read'")
+}
+
+func TestRole_UsernamePersistedAndReturned(t *testing.T) {
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	testRoleCreate(t, b, s, "deploy", map[string]interface{}{
+		"scope":    "write",
+		"username": "svc-deploy",
+	})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "role/deploy", Storage: s,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "svc-deploy", resp.Data["username"])
+
+	// Empty by default for roles that don't target a user.
+	testRoleCreate(t, b, s, "plain", map[string]interface{}{"scope": "read"})
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "role/plain", Storage: s,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "", resp.Data["username"])
+}
+
+// TestRole_SchemaUpgrade confirms a role persisted before the username field was
+// added decodes cleanly, with username defaulting to empty (mint-as-engine).
+func TestRole_SchemaUpgrade(t *testing.T) {
+	oldBlob := []byte(`{"scope":"write","description":"legacy","ttl":3600,"max_ttl":28800}`)
+	var role aapRoleEntry
+	require.NoError(t, json.Unmarshal(oldBlob, &role))
+	require.Equal(t, "write", role.Scope)
+	require.Equal(t, "legacy", role.Description)
+	require.Equal(t, "", role.Username, "new field defaults to empty on legacy entries")
 }

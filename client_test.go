@@ -55,7 +55,7 @@ func TestClient_CreateAndRevoke(t *testing.T) {
 	c := newTestClient(t, srv.URL, "admin-token")
 	ctx := context.Background()
 
-	tok, err := c.CreateToken(ctx, "write", "vault-test")
+	tok, err := c.CreateToken(ctx, "write", "vault-test", 0)
 	require.NoError(t, err)
 	require.NotZero(t, tok.ID)
 	require.NotEmpty(t, tok.Token)
@@ -77,13 +77,49 @@ func TestClient_Revoke_idempotentOn404(t *testing.T) {
 	require.NoError(t, c.RevokeToken(context.Background(), 999999))
 }
 
+func TestClient_ResolveUserID(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "admin-token")
+	ctx := context.Background()
+
+	id, err := c.ResolveUserID(ctx, "svc-deploy")
+	require.NoError(t, err)
+	require.Equal(t, int64(7), id)
+
+	_, err = c.ResolveUserID(ctx, "nope")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not found")
+}
+
+func TestClient_CreateToken_BindsUser(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "admin-token")
+	ctx := context.Background()
+
+	// userID == 0 must omit the user field (mint as engine identity).
+	tok, err := c.CreateToken(ctx, "read", "no-user", 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), m.mintUserFor(tok.ID))
+
+	// A non-zero userID must be sent as the "user" field.
+	tok, err = c.CreateToken(ctx, "read", "bound", 7)
+	require.NoError(t, err)
+	require.Equal(t, int64(7), m.mintUserFor(tok.ID))
+}
+
 func TestClient_CreateToken_badAuth(t *testing.T) {
 	m := newMockAAP("the-right-token")
 	srv := m.server(t)
 	defer srv.Close()
 
 	c := newTestClient(t, srv.URL, "the-wrong-token")
-	_, err := c.CreateToken(context.Background(), "read", "x")
+	_, err := c.CreateToken(context.Background(), "read", "x", 0)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "401")
 }
@@ -107,7 +143,7 @@ func TestClient_CreateToken_rejectsMissingOrZeroID(t *testing.T) {
 			defer srv.Close()
 
 			c := newTestClient(t, srv.URL, "admin-token")
-			_, err := c.CreateToken(context.Background(), "read", "vault-test")
+			_, err := c.CreateToken(context.Background(), "read", "vault-test", 0)
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "invalid token id")
 		})

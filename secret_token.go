@@ -66,7 +66,17 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 		return nil, nil, err
 	}
 
-	token, err := client.CreateToken(ctx, role.Scope, role.Description)
+	// When the role targets a specific AAP user, resolve it to the numeric id the
+	// mint payload requires. A zero id means "mint as the engine's identity".
+	var userID int64
+	if role.Username != "" {
+		userID, err = client.ResolveUserID(ctx, role.Username)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error resolving AAP user %q: %w", role.Username, err)
+		}
+	}
+
+	token, err := client.CreateToken(ctx, role.Scope, role.Description, userID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error creating AAP token: %w", err)
 	}

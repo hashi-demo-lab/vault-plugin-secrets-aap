@@ -12,6 +12,65 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestCredentials_PerUserMint verifies that a role with a username mints a token
+// bound to that AAP user (resolved username -> id, sent as the "user" field),
+// while a role without a username mints as the engine identity.
+func TestCredentials_PerUserMint(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	testRoleCreate(t, b, s, "deploy", map[string]interface{}{
+		"scope":    "write",
+		"username": "svc-deploy", // resolves to id 7 in the mock
+	})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/deploy", Storage: s,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	tokenID := resp.Data["token_id"].(int64)
+	require.Equal(t, int64(7), m.mintUserFor(tokenID), "token must be minted on behalf of svc-deploy")
+
+	// A role with no username mints unbound (user field omitted).
+	testRoleCreate(t, b, s, "plain", map[string]interface{}{"scope": "read"})
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/plain", Storage: s,
+	})
+	require.NoError(t, err)
+	plainID := resp.Data["token_id"].(int64)
+	require.Equal(t, int64(0), m.mintUserFor(plainID))
+}
+
+// TestCredentials_PerUserMint_UnknownUser surfaces a clear error when the role's
+// username does not resolve, and mints nothing.
+func TestCredentials_PerUserMint_UnknownUser(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	testRoleCreate(t, b, s, "ghost", map[string]interface{}{
+		"scope":    "read",
+		"username": "does-not-exist",
+	})
+
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/ghost", Storage: s,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does-not-exist")
+	require.Equal(t, 0, m.liveCount(), "no token should be minted when the user is unknown")
+}
+
 // TestCredentials_MintRenewRevoke exercises the full dynamic-secret lifecycle
 // against the in-process mock AAP.
 func TestCredentials_MintRenewRevoke(t *testing.T) {
@@ -272,6 +331,72 @@ func TestAcceptance_LiveAAP(t *testing.T) {
 	// Revoke it so we don't leak tokens in the lab.
 	_, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.RevokeOperation, Path: "creds/acc", Storage: s, Secret: resp.Secret,
+	})
+	require.NoError(t, err, "live revoke must succeed")
+}
+
+// TestAcceptance_PerUserMintLiveAAP confirms, against a real AAP, that a role
+// with a username mints a token actually owned by that user — i.e. the gateway
+// accepts the "user" field on POST. Opt-in: set TEST_AAP_USERNAME to a real AAP
+// user/service account the configured token is privileged enough to mint for.
+//
+//	VAULT_ACC=1 TEST_AAP_ADDRESS=... TEST_AAP_TOKEN=... TEST_AAP_USERNAME=svc-deploy \
+//	  go test -run TestAcceptance_PerUserMint -v
+func TestAcceptance_PerUserMintLiveAAP(t *testing.T) {
+	if os.Getenv("VAULT_ACC") == "" {
+		t.Skip("acceptance test skipped; set VAULT_ACC=1 to run against live AAP")
+	}
+	username := os.Getenv("TEST_AAP_USERNAME")
+	if username == "" {
+		t.Skip("set TEST_AAP_USERNAME to a real AAP user to test per-user minting")
+	}
+
+	address := os.Getenv("TEST_AAP_ADDRESS")
+	token := os.Getenv("TEST_AAP_TOKEN")
+	require.NotEmpty(t, address, "TEST_AAP_ADDRESS required")
+	require.NotEmpty(t, token, "TEST_AAP_TOKEN required")
+	apiPath := os.Getenv("TEST_AAP_TOKENS_API_PATH")
+	if apiPath == "" {
+		apiPath = defaultTokensAPIPath
+	}
+	skipTLS := os.Getenv("TEST_AAP_SKIP_TLS_VERIFY") == "true"
+
+	cfg := &aapConfig{Address: address, Token: token, TokensAPIPath: apiPath, SkipTLSVerify: skipTLS}
+	client, err := newClient(cfg)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	wantUserID, err := client.ResolveUserID(ctx, username)
+	require.NoError(t, err, "username must resolve")
+
+	b, s := getTestBackend(t)
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"address": address, "token": token, "tokens_api_path": apiPath, "skip_tls_verify": skipTLS,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError())
+
+	testRoleCreate(t, b, s, "peruser", map[string]interface{}{
+		"scope": "read", "description": "vault-peruser-acc", "username": username, "ttl": "10m",
+	})
+
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/peruser", Storage: s,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	tokenID := resp.Data["token_id"].(int64)
+
+	// Read the token back from AAP and assert it is owned by the requested user.
+	gotUserID, err := client.tokenOwner(ctx, tokenID)
+	require.NoError(t, err)
+	require.Equal(t, wantUserID, gotUserID, "minted token must be owned by %q", username)
+
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.RevokeOperation, Path: "creds/peruser", Storage: s, Secret: resp.Secret,
 	})
 	require.NoError(t, err, "live revoke must succeed")
 }

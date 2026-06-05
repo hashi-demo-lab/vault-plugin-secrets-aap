@@ -115,13 +115,80 @@ func (c *aapClient) tokensURL(suffix string) string {
 	return fmt.Sprintf("%s%s/tokens/%s", c.address, c.basePath, suffix)
 }
 
+// usersURL builds a URL under the users collection (suffix may be a query
+// string such as "?username=alice").
+func (c *aapClient) usersURL(suffix string) string {
+	return fmt.Sprintf("%s%s/users/%s", c.address, c.basePath, suffix)
+}
+
+// aapUser is the subset of an AAP user object needed to resolve a role's
+// username to the numeric id the token-creation payload requires.
+type aapUser struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+}
+
+// ResolveUserID looks up an AAP user by exact username and returns its numeric
+// id. It errors if no user matches or if the lookup is ambiguous, so a token is
+// never bound to the wrong identity.
+func (c *aapClient) ResolveUserID(ctx context.Context, username string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.usersURL("?username="+url.QueryEscape(username)), nil)
+	if err != nil {
+		return 0, err
+	}
+
+	respBody, status, err := c.do(req)
+	if err != nil {
+		return 0, err
+	}
+	if status != http.StatusOK {
+		return 0, fmt.Errorf("AAP user lookup failed (HTTP %d): %s", status, truncate(respBody))
+	}
+
+	var list struct {
+		Results []aapUser `json:"results"`
+	}
+	if err := json.Unmarshal(respBody, &list); err != nil {
+		return 0, fmt.Errorf("failed to decode AAP user lookup: %w", err)
+	}
+
+	// The ?username= filter should already be exact, but match defensively so a
+	// substring or case quirk cannot bind a token to the wrong user.
+	var matches []aapUser
+	for _, u := range list.Results {
+		if u.Username == username {
+			matches = append(matches, u)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return 0, fmt.Errorf("AAP user %q not found", username)
+	case 1:
+		if matches[0].ID <= 0 {
+			return 0, fmt.Errorf("AAP returned an invalid id for user %q", username)
+		}
+		return matches[0].ID, nil
+	default:
+		return 0, fmt.Errorf("AAP user %q is ambiguous (%d matches)", username, len(matches))
+	}
+}
+
 // CreateToken mints a new AAP OAuth2 token with the given scope and
 // description. The returned token's secret value is only available here.
-func (c *aapClient) CreateToken(ctx context.Context, scope, description string) (*aapToken, error) {
-	payload, err := json.Marshal(map[string]string{
+//
+// When userID > 0 the token is minted on behalf of that AAP user (the gateway
+// tokens serializer accepts a "user" field), so the token inherits that user's
+// RBAC and audit attribution. When userID == 0 the token belongs to the
+// engine's own configured identity, preserving the original behavior.
+func (c *aapClient) CreateToken(ctx context.Context, scope, description string, userID int64) (*aapToken, error) {
+	reqBody := map[string]interface{}{
 		"scope":       scope,
 		"description": description,
-	})
+	}
+	if userID > 0 {
+		reqBody["user"] = userID
+	}
+	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode token request: %w", err)
 	}
@@ -201,6 +268,29 @@ func (c *aapClient) RevokeToken(ctx context.Context, id int64) error {
 	default:
 		return fmt.Errorf("AAP token revocation failed (HTTP %d): %s", status, truncate(body))
 	}
+}
+
+// tokenOwner returns the AAP user id that owns a token. AAP returns the owner
+// in the token object's "user" field; used to verify per-user minting.
+func (c *aapClient) tokenOwner(ctx context.Context, id int64) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.tokensURL(fmt.Sprintf("%d/", id)), nil)
+	if err != nil {
+		return 0, err
+	}
+	body, status, err := c.do(req)
+	if err != nil {
+		return 0, err
+	}
+	if status != http.StatusOK {
+		return 0, fmt.Errorf("AAP token read failed (HTTP %d): %s", status, truncate(body))
+	}
+	var detail struct {
+		User int64 `json:"user"`
+	}
+	if err := json.Unmarshal(body, &detail); err != nil {
+		return 0, fmt.Errorf("failed to decode token detail: %w", err)
+	}
+	return detail.User, nil
 }
 
 // do sets auth headers, executes the request, and returns the body and status.

@@ -23,6 +23,11 @@ type aapRoleEntry struct {
 	Description string        `json:"description"`
 	TTL         time.Duration `json:"ttl"`
 	MaxTTL      time.Duration `json:"max_ttl"`
+
+	// Username, when set, mints each token on behalf of that AAP user so the
+	// token inherits the user's RBAC and audit attribution. Empty (the default)
+	// mints as the engine's own configured identity.
+	Username string `json:"username"`
 }
 
 // toResponseData renders a role for the read/list API.
@@ -30,6 +35,7 @@ func (r *aapRoleEntry) toResponseData() map[string]interface{} {
 	return map[string]interface{}{
 		"scope":       r.Scope,
 		"description": r.Description,
+		"username":    r.Username,
 		"ttl":         int64(r.TTL.Seconds()),
 		"max_ttl":     int64(r.MaxTTL.Seconds()),
 	}
@@ -57,6 +63,10 @@ func pathRole(b *aapBackend) []*framework.Path {
 				"description": {
 					Type:        framework.TypeString,
 					Description: "Description applied to minted AAP tokens (helps identify them in AAP).",
+				},
+				"username": {
+					Type:        framework.TypeString,
+					Description: "Optional AAP username to mint tokens on behalf of. If set, tokens inherit that user's RBAC and audit attribution; if empty, tokens are minted as the engine's configured identity. Requires the config token to be privileged enough to mint for other users.",
 				},
 				"ttl": {
 					Type:        framework.TypeDurationSecond,
@@ -157,6 +167,10 @@ func (b *aapBackend) pathRolesWrite(ctx context.Context, req *logical.Request, d
 
 	if description, ok := data.GetOk("description"); ok {
 		role.Description = description.(string)
+	}
+
+	if username, ok := data.GetOk("username"); ok {
+		role.Username = username.(string)
 	}
 
 	if ttlRaw, ok := data.GetOk("ttl"); ok {

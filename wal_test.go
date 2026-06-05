@@ -24,7 +24,7 @@ func TestWALRollback_RevokesOrphanedToken(t *testing.T) {
 	// Mint directly via the client to create an "orphan" with no lease.
 	client, err := b.getClient(ctx, s)
 	require.NoError(t, err)
-	tok, err := client.CreateToken(ctx, "read", "orphan")
+	tok, err := client.CreateToken(ctx, "read", "orphan", 0)
 	require.NoError(t, err)
 	require.Equal(t, 1, m.liveCount())
 
