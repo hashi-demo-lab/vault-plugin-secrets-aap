@@ -1,10 +1,20 @@
 # Vault Secrets Engine for Minting AAP Tokens — Research & Findings
 
-> **Note:** This is the original background research. The shipped design is in
-> [`../ARCHITECTURE.md`](../ARCHITECTURE.md), which supersedes it where they differ —
-> most notably the live API probe relocated the token endpoints to the AAP **gateway**
-> (`/api/gateway/v1`) and changed the lease model from non-renewable (strategy C, below)
-> to **renewable** (strategy A), since AAP tokens default to a ~1-year expiry.
+> **Note:** This is the original background research, written *before* the live API probe.
+> [`../ARCHITECTURE.md`](../ARCHITECTURE.md) is the authoritative record of the shipped
+> design. Where this document differs, the shipped design wins. The corrections the probe
+> produced (so you can read the narrative below in context):
+>
+> | This doc assumed (pre-probe) | Shipped reality |
+> |---|---|
+> | Token API at the controller path `/api/v2/tokens/` | AAP 2.5 **gateway** `/api/gateway/v1/tokens/` (the controller path 404s) |
+> | Engine authenticates with **username/password** | A privileged **bearer token** (`token` / `Authorization: Bearer`) |
+> | TLS field `verify_ssl` | `skip_tls_verify` (+ optional `ca_cert`) |
+> | Lease model: non-renewable (strategy C, §6) | **Renewable** (strategy A), since AAP tokens default to a ~1-year expiry |
+>
+> The `/api/v2/...`, `username`/`password`, and `verify_ssl` references in the prose and
+> diagrams below reflect those pre-probe assumptions; mentally substitute the right-hand
+> column.
 
 **Date:** 2026-06-05
 **Goal:** Make HashiCorp Vault mint Ansible Automation Platform (AAP) OAuth2 tokens as
@@ -177,8 +187,8 @@ func (b *aapBackend) aapToken() *framework.Secret {
         Fields: map[string]*framework.FieldSchema{
             "token": {Type: framework.TypeString, Description: "AAP OAuth2 token"},
         },
-        Revoke: b.tokenRevoke,
-        Renew:  b.tokenRenew, // renewable lease (strategy A); see §6
+        Revoke: b.tokenRevoke, // calls DELETE /api/gateway/v1/tokens/{id}/
+        Renew:  b.tokenRenew,  // renewable lease (strategy A); see §6
     }
 }
 ```
@@ -240,10 +250,10 @@ vault secrets enable -path=aap vault-plugin-secrets-aap
 
 # configure the engine to talk to AAP
 vault write aap/config \
-  url="https://aap.example.com" \
-  username="vault-svc" \
-  password="•••" \
-  verify_ssl=true
+  address="https://aap.example.com" \
+  token="<privileged AAP token>" \
+  tokens_api_path="/api/gateway/v1" \
+  skip_tls_verify=false
 
 # define a role (TTL = how long minted tokens live)
 vault write aap/role/ci scope="write" ttl=1h max_ttl=8h
