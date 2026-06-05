@@ -176,19 +176,15 @@ func (c *aapClient) ResolveUserID(ctx context.Context, username string) (int64, 
 // CreateToken mints a new AAP OAuth2 token with the given scope and
 // description. The returned token's secret value is only available here.
 //
-// When userID > 0 the token is minted on behalf of that AAP user (the gateway
-// tokens serializer accepts a "user" field), so the token inherits that user's
-// RBAC and audit attribution. When userID == 0 the token belongs to the
-// engine's own configured identity, preserving the original behavior.
-func (c *aapClient) CreateToken(ctx context.Context, scope, description string, userID int64) (*aapToken, error) {
-	reqBody := map[string]interface{}{
+// The token is owned by whichever identity this client authenticates as (AAP
+// assigns ownership from the caller, ignoring any requested owner). Per-user
+// issuance is therefore achieved by authenticating with that user's own token —
+// see the role bootstrap_token handling in createToken.
+func (c *aapClient) CreateToken(ctx context.Context, scope, description string) (*aapToken, error) {
+	payload, err := json.Marshal(map[string]string{
 		"scope":       scope,
 		"description": description,
-	}
-	if userID > 0 {
-		reqBody["user"] = userID
-	}
-	payload, err := json.Marshal(reqBody)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode token request: %w", err)
 	}

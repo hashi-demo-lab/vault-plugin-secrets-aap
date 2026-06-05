@@ -61,41 +61,55 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 		return nil, nil, errBackendNotConfigured
 	}
 
-	client, err := newClient(config)
+	// adminClient uses the engine's configured (privileged) token. It is used to
+	// resolve usernames and to read/revoke any token (token IDs are global).
+	adminClient, err := newClient(config)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// When the role targets a specific AAP user, resolve it to the numeric id the
-	// mint payload requires. A zero id means "mint as the engine's identity".
-	var userID int64
-	if role.Username != "" {
-		userID, err = client.ResolveUserID(ctx, role.Username)
+	// Per-user issuance: AAP owns a minted token to whichever identity makes the
+	// call, so to mint *as* a specific service account the engine authenticates
+	// with that account's own bootstrap token. Without a bootstrap token, the
+	// token is owned by the engine's configured identity (the default).
+	mintClient := adminClient
+	if role.BootstrapToken != "" {
+		botConfig := cloneConfig(config)
+		botConfig.Token = role.BootstrapToken
+		mintClient, err = newClient(botConfig)
 		if err != nil {
-			return nil, nil, fmt.Errorf("error resolving AAP user %q: %w", role.Username, err)
+			return nil, nil, fmt.Errorf("invalid bootstrap_token for role: %w", err)
 		}
 	}
 
-	token, err := client.CreateToken(ctx, role.Scope, role.Description, userID)
+	token, err := mintClient.CreateToken(ctx, role.Scope, role.Description)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error creating AAP token: %w", err)
 	}
 
-	// Per-user safety guard. AAP mints a token for the *authenticating* identity;
-	// some versions (e.g. the 2.5 gateway) silently ignore the requested "user"
-	// field rather than rejecting it, which would misattribute the token. When a
-	// role targets a user, confirm the minted token is actually owned by that
-	// user; if not, revoke it and fail loudly rather than hand back a token that
-	// carries the wrong identity's RBAC.
-	if userID > 0 {
-		owner, verr := client.tokenOwner(ctx, token.ID)
+	// Ownership guard. When the role names a user, confirm the minted token is
+	// actually owned by that user and, if not, revoke it and fail loudly rather
+	// than hand back a token carrying the wrong identity's RBAC. This catches a
+	// misconfigured bootstrap_token, and the case where no bootstrap_token was
+	// supplied (so the token was minted as the engine identity).
+	if role.Username != "" {
+		wantID, rerr := adminClient.ResolveUserID(ctx, role.Username)
+		if rerr != nil {
+			_ = adminClient.RevokeToken(ctx, token.ID)
+			return nil, nil, fmt.Errorf("error resolving AAP user %q: %w", role.Username, rerr)
+		}
+		owner, verr := adminClient.tokenOwner(ctx, token.ID)
 		if verr != nil {
-			_ = client.RevokeToken(ctx, token.ID)
+			_ = adminClient.RevokeToken(ctx, token.ID)
 			return nil, nil, fmt.Errorf("could not verify owner of token minted for %q: %w", role.Username, verr)
 		}
-		if owner != userID {
-			_ = client.RevokeToken(ctx, token.ID)
-			return nil, nil, fmt.Errorf("AAP did not honor per-user issuance: token was minted for user id %d, not %q (id %d). This AAP version may not support minting on behalf of another user with the configured token", owner, role.Username, userID)
+		if owner != wantID {
+			_ = adminClient.RevokeToken(ctx, token.ID)
+			hint := ""
+			if role.BootstrapToken == "" {
+				hint = " (set bootstrap_token to that user's own AAP token so the token is minted as them)"
+			}
+			return nil, nil, fmt.Errorf("token was minted for user id %d, not %q (id %d)%s", owner, role.Username, wantID, hint)
 		}
 	}
 

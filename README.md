@@ -79,37 +79,43 @@ vault lease revoke <lease_id>
 |-------|---------|-------------|
 | `scope` | `read` | `read` or `write` (defaults to least-privilege `read`) |
 | `description` | — | description applied to minted AAP tokens |
-| `username` | — | optional AAP user/service account to mint on behalf of (see below) |
+| `username` | — | optional AAP user the minted token must be owned by (ownership guard; see below) |
+| `bootstrap_token` | — | optional: that user's own AAP token, so tokens are minted *as* them (write-only) |
 | `ttl` | mount default | lease TTL for minted tokens |
 | `max_ttl` | mount default | maximum lease TTL |
 
-#### Per-user token issuance (`username`) — limited; see status below
+#### Per-user token issuance (`bootstrap_token` + `username`)
 
 By default every token is minted as the engine's own configured identity, so it carries that
-identity's RBAC. The intent of `username` is to mint **on behalf of a specific AAP user/service
-account** — the engine resolves the name to its id (`GET {base}/users/?username=`) and requests
-that owner on the mint, so the token would inherit **that** user's RBAC and audit attribution.
+identity's RBAC. To issue tokens **owned by a specific AAP user/service account**, give the role
+that user's own token as `bootstrap_token`: AAP owns a minted token to whichever identity
+authenticates the call, so the engine authenticates with the bootstrap token and the issued
+token belongs to that user — inheriting their RBAC and audit attribution.
 
 ```bash
-vault write aap/role/deploy scope=read username="svc-deploy"
-vault read  aap/creds/deploy
+# svc-deploy-token is svc-deploy's own AAP token (created once in AAP)
+vault write aap/role/deploy scope=write username="svc-deploy" bootstrap_token="svc-deploy-token"
+vault read  aap/creds/deploy   # token owned by svc-deploy
 ```
 
-**Status / important limitation.** On the **AAP 2.5 gateway** (`/api/gateway/v1`) there is no
-admin-token API path to mint a token owned by another user: the `user` field on
-`POST .../tokens/` is **silently ignored** (the token is owned by the caller), the
-`users/{id}/personal_tokens/` sub-resource is read-only, and the controller API exposes no
-token endpoints. A token always belongs to whoever authenticates.
+How it works and why it's safe:
+- **`bootstrap_token`** is the per-identity credential the engine mints with. It is stored
+  seal-wrapped (`role/*` is in `SealWrapStorage`) and **never returned on read** (`role` read
+  shows `bootstrap_token_set: true`).
+- **`username`** is an ownership **guard**: after minting, the engine reads the new token's
+  owner and, if it is not this user, **revokes the token and errors** — so a misconfigured
+  `bootstrap_token` (or a role that names a user but supplies no bootstrap token) can never hand
+  back a token carrying the wrong identity.
+- Revocation is unchanged — token IDs are global, revoked with the engine's config token.
 
-To avoid misattribution, the engine **verifies ownership after minting**: when `username` is
-set, it confirms the new token is actually owned by that user and, if not, **revokes the token
-and returns an error** rather than handing back a token with the wrong identity. As a result,
-on AAP 2.5 a role with `username` set will **fail with a clear error** — it never issues a
-mis-owned token. Delivering real per-user issuance requires a per-user-credentials design
-(the engine authenticating as the target identity); tracked in
-[issue #3](https://github.com/hashi-demo-lab/vault-plugin-secrets-aap/issues/3).
+Why a bootstrap token and not the `user` field or a password grant? On the **AAP 2.5 gateway**
+there is no admin-token path to mint for another user (the `user` field on `POST .../tokens/` is
+silently ignored, `users/{id}/personal_tokens/` is read-only, the controller exposes no token
+endpoints). Authenticating as the target — with their own revocable, scoped token — is the
+mechanism AAP supports, and avoids storing user passwords. Verified end-to-end against live AAP
+2.5 (see `TestAcceptance_PerUserMintLiveAAP`).
 
-Leave `username` empty for the supported mint-as-engine behavior.
+Leave both empty for the default mint-as-engine behavior.
 
 ## Lease model: renewable (strategy A — the Vault norm)
 

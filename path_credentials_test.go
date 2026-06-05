@@ -24,7 +24,7 @@ func TestRevokeHelpers(t *testing.T) {
 	c, err := newClient(cfg)
 	require.NoError(t, err)
 
-	tok, err := c.CreateToken(ctx, "read", "to-revoke", 0)
+	tok, err := c.CreateToken(ctx, "read", "to-revoke")
 	require.NoError(t, err)
 	require.NoError(t, revokeWithConfig(ctx, cfg, tok.ID))
 	require.True(t, m.wasRevoked(tok.ID))
@@ -33,11 +33,13 @@ func TestRevokeHelpers(t *testing.T) {
 	revokeBestEffort(ctx, cfg, tok.ID)
 }
 
-// TestCredentials_PerUserMint verifies that a role with a username mints a token
-// bound to that AAP user (resolved username -> id, sent as the "user" field),
-// while a role without a username mints as the engine identity.
+// TestCredentials_PerUserMint verifies that a role with a bootstrap_token mints a
+// token owned by that user (the engine authenticates as the bootstrap identity),
+// and that the username ownership guard passes. A role without a bootstrap_token
+// mints as the engine identity.
 func TestCredentials_PerUserMint(t *testing.T) {
 	m := newMockAAP("admin-token")
+	m.addIdentity("svc-deploy-token", 7) // svc-deploy's own token mints as id 7
 	srv := m.server(t)
 	defer srv.Close()
 
@@ -46,8 +48,9 @@ func TestCredentials_PerUserMint(t *testing.T) {
 
 	testConfigCreate(t, b, s, srv.URL, "admin-token")
 	testRoleCreate(t, b, s, "deploy", map[string]interface{}{
-		"scope":    "write",
-		"username": "svc-deploy", // resolves to id 7 in the mock
+		"scope":           "write",
+		"username":        "svc-deploy", // id 7, asserted by the guard
+		"bootstrap_token": "svc-deploy-token",
 	})
 
 	resp, err := b.HandleRequest(ctx, &logical.Request{
@@ -56,25 +59,24 @@ func TestCredentials_PerUserMint(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	tokenID := resp.Data["token_id"].(int64)
-	require.Equal(t, int64(7), m.mintUserFor(tokenID), "token must be minted on behalf of svc-deploy")
+	require.Equal(t, int64(7), m.mintUserFor(tokenID), "token must be minted as svc-deploy")
 
-	// A role with no username mints unbound (user field omitted).
+	// A role with no bootstrap_token mints as the engine identity (admin, id 2).
 	testRoleCreate(t, b, s, "plain", map[string]interface{}{"scope": "read"})
 	resp, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.ReadOperation, Path: "creds/plain", Storage: s,
 	})
 	require.NoError(t, err)
 	plainID := resp.Data["token_id"].(int64)
-	require.Equal(t, int64(0), m.mintUserFor(plainID))
+	require.Equal(t, int64(2), m.mintUserFor(plainID))
 }
 
-// TestCredentials_PerUserMint_OwnershipGuard reproduces AAP 2.5 gateway behavior
-// (the "user" field is silently ignored, so the token is owned by the calling
-// identity). The engine must detect the mismatch, revoke the misattributed
-// token, and fail loudly rather than hand back a token with the wrong identity.
+// TestCredentials_PerUserMint_OwnershipGuard covers the guard firing: a role names
+// a user but supplies no bootstrap_token, so the token is minted as the engine
+// identity (id 2), not the requested user (id 7). The engine must detect the
+// mismatch, revoke the misattributed token, and fail loudly.
 func TestCredentials_PerUserMint_OwnershipGuard(t *testing.T) {
 	m := newMockAAP("admin-token")
-	m.forceOwner = 2 // mint always owned by id 2 (the caller), ignoring the user field
 	srv := m.server(t)
 	defer srv.Close()
 
@@ -83,14 +85,15 @@ func TestCredentials_PerUserMint_OwnershipGuard(t *testing.T) {
 
 	testConfigCreate(t, b, s, srv.URL, "admin-token")
 	testRoleCreate(t, b, s, "deploy", map[string]interface{}{
-		"scope": "read", "username": "svc-deploy", // resolves to id 7
+		"scope": "read", "username": "svc-deploy", // id 7, but no bootstrap_token
 	})
 
 	_, err := b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.ReadOperation, Path: "creds/deploy", Storage: s,
 	})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "did not honor per-user issuance")
+	require.Contains(t, err.Error(), "not \"svc-deploy\"")
+	require.Contains(t, err.Error(), "bootstrap_token")
 	require.Equal(t, 0, m.liveCount(), "the misattributed token must be revoked, not leaked")
 }
 
@@ -382,23 +385,23 @@ func TestAcceptance_LiveAAP(t *testing.T) {
 	require.NoError(t, err, "live revoke must succeed")
 }
 
-// TestAcceptance_PerUserMintLiveAAP asserts the per-user safety invariant against
-// a real AAP: a role with a username must EITHER mint a token genuinely owned by
-// that user, OR fail loudly — it must never silently hand back a token owned by
-// the engine's own identity. On the AAP 2.5 gateway the "user" field is ignored,
-// so the engine's ownership guard makes this return an error (the expected,
-// correct outcome there). On an AAP that honors on-behalf minting it succeeds.
-// Opt-in: set TEST_AAP_USERNAME to a real AAP user.
+// TestAcceptance_PerUserMintLiveAAP verifies per-user issuance against a real AAP
+// using the bootstrap-token mechanism: the engine authenticates with the target
+// user's own token, so the minted token is owned by that user. The role also sets
+// username, and the engine's ownership guard confirms the owner matches.
+// Opt-in: set TEST_AAP_USERNAME and TEST_AAP_BOOTSTRAP_TOKEN (that user's token).
 //
-//	VAULT_ACC=1 TEST_AAP_ADDRESS=... TEST_AAP_TOKEN=... TEST_AAP_USERNAME=svc-deploy \
+//	VAULT_ACC=1 TEST_AAP_ADDRESS=... TEST_AAP_TOKEN=<admin> \
+//	  TEST_AAP_USERNAME=svc-deploy TEST_AAP_BOOTSTRAP_TOKEN=<svc-deploy's token> \
 //	  go test -run TestAcceptance_PerUserMint -v
 func TestAcceptance_PerUserMintLiveAAP(t *testing.T) {
 	if os.Getenv("VAULT_ACC") == "" {
 		t.Skip("acceptance test skipped; set VAULT_ACC=1 to run against live AAP")
 	}
 	username := os.Getenv("TEST_AAP_USERNAME")
-	if username == "" {
-		t.Skip("set TEST_AAP_USERNAME to a real AAP user to test per-user minting")
+	bootstrap := os.Getenv("TEST_AAP_BOOTSTRAP_TOKEN")
+	if username == "" || bootstrap == "" {
+		t.Skip("set TEST_AAP_USERNAME and TEST_AAP_BOOTSTRAP_TOKEN to test per-user minting")
 	}
 
 	address := os.Getenv("TEST_AAP_ADDRESS")
@@ -430,25 +433,17 @@ func TestAcceptance_PerUserMintLiveAAP(t *testing.T) {
 	require.False(t, resp != nil && resp.IsError())
 
 	testRoleCreate(t, b, s, "peruser", map[string]interface{}{
-		"scope": "read", "description": "vault-peruser-acc", "username": username, "ttl": "10m",
+		"scope": "read", "description": "vault-peruser-acc",
+		"username": username, "bootstrap_token": bootstrap, "ttl": "10m",
 	})
 
 	resp, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.ReadOperation, Path: "creds/peruser", Storage: s,
 	})
-
-	if err != nil {
-		// AAP did not honor on-behalf minting (e.g. 2.5 gateway ignores the user
-		// field). The ownership guard must have caught it and revoked — a token
-		// owned by the wrong identity must never be issued.
-		require.Contains(t, err.Error(), "did not honor per-user issuance",
-			"per-user mint failed, but not via the ownership guard: %v", err)
-		t.Logf("per-user issuance not supported by this AAP; engine correctly refused: %v", err)
-		return
-	}
-
-	// AAP honored it: the token must genuinely be owned by the requested user.
+	require.NoError(t, err, "per-user mint should succeed with a valid bootstrap token")
 	require.NotNil(t, resp)
+
+	// The minted token must genuinely be owned by the requested user.
 	tokenID := resp.Data["token_id"].(int64)
 	gotUserID, err := client.tokenOwner(ctx, tokenID)
 	require.NoError(t, err)

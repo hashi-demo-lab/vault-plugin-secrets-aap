@@ -24,20 +24,28 @@ type aapRoleEntry struct {
 	TTL         time.Duration `json:"ttl"`
 	MaxTTL      time.Duration `json:"max_ttl"`
 
-	// Username, when set, mints each token on behalf of that AAP user so the
-	// token inherits the user's RBAC and audit attribution. Empty (the default)
-	// mints as the engine's own configured identity.
+	// Username, when set, asserts the minted token must be owned by this AAP user.
+	// Issuance fails (and the token is revoked) if the owner does not match — a
+	// guard against misconfiguration. Empty leaves ownership unchecked.
 	Username string `json:"username"`
+
+	// BootstrapToken, when set, is the target AAP user's own token. The engine
+	// authenticates with it to mint, so the issued token is owned by that user
+	// (AAP assigns ownership from the caller). This is how per-user issuance is
+	// achieved. Empty mints as the engine's own configured identity. Stored
+	// seal-wrapped (role/* is in SealWrapStorage) and never returned on read.
+	BootstrapToken string `json:"bootstrap_token"`
 }
 
 // toResponseData renders a role for the read/list API.
 func (r *aapRoleEntry) toResponseData() map[string]interface{} {
 	return map[string]interface{}{
-		"scope":       r.Scope,
-		"description": r.Description,
-		"username":    r.Username,
-		"ttl":         int64(r.TTL.Seconds()),
-		"max_ttl":     int64(r.MaxTTL.Seconds()),
+		"scope":               r.Scope,
+		"description":         r.Description,
+		"username":            r.Username,
+		"bootstrap_token_set": r.BootstrapToken != "",
+		"ttl":                 int64(r.TTL.Seconds()),
+		"max_ttl":             int64(r.MaxTTL.Seconds()),
 	}
 }
 
@@ -66,7 +74,15 @@ func pathRole(b *aapBackend) []*framework.Path {
 				},
 				"username": {
 					Type:        framework.TypeString,
-					Description: "Optional AAP username to mint tokens on behalf of. If set, tokens inherit that user's RBAC and audit attribution; if empty, tokens are minted as the engine's configured identity. Requires the config token to be privileged enough to mint for other users.",
+					Description: "Optional AAP username the minted token must be owned by. Acts as a guard: issuance fails if the owner does not match. Pair with bootstrap_token to mint as that user.",
+				},
+				"bootstrap_token": {
+					Type:        framework.TypeString,
+					Description: "Optional AAP token belonging to the user this role issues for. The engine authenticates with it so minted tokens are owned by that user. Write-only; never returned on read.",
+					DisplayAttrs: &framework.DisplayAttributes{
+						Name:      "Bootstrap Token",
+						Sensitive: true,
+					},
 				},
 				"ttl": {
 					Type:        framework.TypeDurationSecond,
@@ -171,6 +187,10 @@ func (b *aapBackend) pathRolesWrite(ctx context.Context, req *logical.Request, d
 
 	if username, ok := data.GetOk("username"); ok {
 		role.Username = username.(string)
+	}
+
+	if bootstrap, ok := data.GetOk("bootstrap_token"); ok {
+		role.BootstrapToken = bootstrap.(string)
 	}
 
 	if ttlRaw, ok := data.GetOk("ttl"); ok {
