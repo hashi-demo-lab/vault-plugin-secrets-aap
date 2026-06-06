@@ -23,15 +23,16 @@ const walRollbackMinAge = 5 * time.Minute
 // TokenID is a string so it survives the WAL's JSON round-trip without the
 // float64 precision loss an integer would suffer.
 type walToken struct {
-	TokenID                 string `json:"token_id"`
-	Role                    string `json:"role"`
-	RevocationAddress       string `json:"revocation_address"`
-	RevocationToken         string `json:"revocation_token"`
-	RevocationUsername      string `json:"revocation_username"`
-	RevocationPassword      string `json:"revocation_password"`
-	RevocationTokensAPIPath string `json:"revocation_tokens_api_path"`
-	RevocationCACert        string `json:"revocation_ca_cert"`
-	RevocationSkipTLSVerify bool   `json:"revocation_skip_tls_verify"`
+	TokenID                  string `json:"token_id"`
+	Role                     string `json:"role"`
+	RevocationAddress        string `json:"revocation_address"`
+	RevocationToken          string `json:"revocation_token"`
+	RevocationUsername       string `json:"revocation_username"`
+	RevocationPassword       string `json:"revocation_password"`
+	RevocationTokensAPIPath  string `json:"revocation_tokens_api_path"`
+	RevocationCACert         string `json:"revocation_ca_cert"`
+	RevocationSkipTLSVerify  bool   `json:"revocation_skip_tls_verify"`
+	RevocationRequestTimeout int64  `json:"revocation_request_timeout,omitempty"`
 }
 
 func newWALToken(tokenID, role string, config *aapConfig) *walToken {
@@ -49,6 +50,9 @@ func newWALToken(tokenID, role string, config *aapConfig) *walToken {
 	token.RevocationTokensAPIPath = config.TokensAPIPath
 	token.RevocationCACert = config.CACert
 	token.RevocationSkipTLSVerify = config.SkipTLSVerify
+	if config.RequestTimeout > 0 {
+		token.RevocationRequestTimeout = int64(config.RequestTimeout.Seconds())
+	}
 	return token
 }
 

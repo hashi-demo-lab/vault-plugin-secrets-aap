@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/stretchr/testify/require"
 )
@@ -50,8 +51,9 @@ func TestWALRollback_UsesOriginalConfigAfterRotation(t *testing.T) {
 	ctx := context.Background()
 	testConfigCreate(t, b, s, originalSrv.URL, "token-a")
 
-	tok, revocationConfig, err := b.createToken(ctx, s, &aapRoleEntry{Scope: "read"})
+	tok, revocationConfig, walID, err := b.createToken(ctx, s, "ci", &aapRoleEntry{Scope: "read"})
 	require.NoError(t, err)
+	require.NoError(t, framework.DeleteWAL(ctx, s, walID))
 	require.Equal(t, 1, original.liveCount())
 
 	_, err = b.HandleRequest(ctx, &logical.Request{

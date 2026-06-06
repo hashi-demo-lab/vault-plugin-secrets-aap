@@ -42,6 +42,9 @@ func pathCredentials(b *aapBackend) *framework.Path {
 func (b *aapBackend) pathCredentialsRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	roleName := data.Get("name").(string)
 
+	unlock := b.lockRole(roleName)
+	defer unlock()
+
 	role, err := b.getRole(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, fmt.Errorf("error retrieving role: %w", err)
@@ -55,18 +58,18 @@ func (b *aapBackend) pathCredentialsRead(ctx context.Context, req *logical.Reque
 
 // createCreds mints the token and assembles the leased secret response.
 //
-// A WAL entry is written around the mint so that if the request fails after the
-// token is created in AAP but before the lease is durably stored, the periodic
-// WAL rollback revokes the orphaned token. On success the WAL is removed before
-// returning, because the lease itself then carries the token ID for revocation.
+// A WAL entry is written immediately after AAP returns the minted token id, before
+// any post-mint verification calls. If the request then fails before the lease is
+// returned, the periodic WAL rollback revokes the orphaned token. On success the
+// WAL is removed before returning, because the lease itself then carries the token
+// ID for revocation.
 //
-// One window is irreducible: a process crash between CreateToken returning and
-// PutWAL committing leaves a token in AAP with no WAL to clean it up. AAP has no
-// reserve-then-commit token API, so the ID needed for the WAL only exists after
-// the token does. The window is sub-second; such tokens must be reaped by the
-// role's description tag or AAP's own expiry.
+// One window is irreducible: if AAP commits a token but the POST response never
+// reaches Vault, the token id needed for rollback never exists locally. The client
+// tags descriptions with a unique request marker and sweeps matching tokens after
+// ambiguous create failures to reduce that window.
 func (b *aapBackend) createCreds(ctx context.Context, req *logical.Request, roleName string, role *aapRoleEntry) (*logical.Response, error) {
-	token, revocationConfig, err := b.createToken(ctx, req.Storage, role)
+	token, revocationConfig, walID, err := b.createToken(ctx, req.Storage, roleName, role)
 	if err != nil {
 		return nil, err
 	}
@@ -78,13 +81,6 @@ func (b *aapBackend) createCreds(ctx context.Context, req *logical.Request, role
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), defaultHTTPTimeout)
 	defer cancelCleanup()
 
-	walID, err := framework.PutWAL(cleanupCtx, req.Storage, walTypeToken, newWALToken(tokenIDStr, roleName, revocationConfig))
-	if err != nil {
-		// Could not record the rollback intent; revoke now so we don't orphan
-		// the token, then surface the failure.
-		revokeBestEffort(cleanupCtx, revocationConfig, token.ID)
-		return nil, fmt.Errorf("failed to write WAL for minted token: %w", err)
-	}
 	if err := ctx.Err(); err != nil {
 		if revokeErr := revokeWithConfig(cleanupCtx, revocationConfig, token.ID); revokeErr != nil {
 			return nil, fmt.Errorf("request canceled after minting AAP token; WAL retained for rollback after revoke failed: %w", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/stretchr/testify/require"
 )
@@ -74,6 +75,9 @@ func TestCredentials_AppScopedMint_GuardReportsRevokeFailure(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "failed to revoke minted token")
 	require.Equal(t, 1, m.liveCount(), "the cleanup failure should be visible because the token remains live")
+	wals, err := framework.ListWAL(ctx, s)
+	require.NoError(t, err)
+	require.Len(t, wals, 1, "failed cleanup should leave WAL retry state")
 }
 
 // TestCredentials_AppScopedMint_UnknownApp errors clearly and mints nothing when

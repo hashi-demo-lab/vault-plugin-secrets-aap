@@ -110,7 +110,7 @@ func pathConfig(b *aapBackend) *framework.Path {
 		},
 		"token_description_prefix": {
 			Type:        framework.TypeString,
-			Description: "Optional string prepended to the description of every minted token, making engine-issued tokens identifiable (and sweepable) in AAP. Empty leaves the role's description unmodified.",
+			Description: "Optional string prepended to the description of every minted token. The engine also appends a unique request marker so ambiguous create failures can be swept safely.",
 		},
 	}
 	// Adds rotation_schedule, rotation_window, rotation_period, and
@@ -453,12 +453,12 @@ Optional operational settings:
 
   * "request_timeout" bounds each HTTP call to AAP (default 30s).
 
-  * "token_description_prefix" is prepended to every minted token's description
-    so engine-issued tokens are identifiable — and sweepable — in AAP. AAP
-    controls token expiry globally (via its OAUTH2_PROVIDER settings) and ignores
-    any client-supplied per-token expiry, so this description tag is the engine's
-    primary means of finding tokens orphaned by a crash. To bound how long an
-    orphaned token can live, lower AAP's global access-token TTL.
+  * "token_description_prefix" is prepended to every minted token's description;
+    the engine also appends a unique "vault-aap-request:<id>" marker so ambiguous
+    create failures can be swept safely. AAP controls token expiry globally (via
+    its OAUTH2_PROVIDER settings) and ignores any client-supplied per-token
+    expiry. To bound how long an unrecoverable orphan can live, lower AAP's global
+    access-token TTL.
 
   * "rotation_schedule"/"rotation_window" or "rotation_period", together with
     "disable_automated_rotation", register the privileged bearer token with

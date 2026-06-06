@@ -3,7 +3,9 @@ package aap
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/stretchr/testify/require"
@@ -149,6 +151,86 @@ func TestRole_UsernamePersistedAndReturned(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "", resp.Data["username"])
 	require.Equal(t, false, resp.Data["bootstrap_token_set"])
+}
+
+func TestRole_UpdateCanClearOptionalFields(t *testing.T) {
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	testRoleCreate(t, b, s, "deploy", map[string]interface{}{
+		"scope":           "write",
+		"description":     "deploy tokens",
+		"username":        "svc-deploy",
+		"bootstrap_token": "svc-deploy-token",
+		"application":     "ci-app",
+		"ttl":             "1h",
+		"max_ttl":         "8h",
+	})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "role/deploy", Storage: s,
+		Data: map[string]interface{}{
+			"description":     "",
+			"username":        "",
+			"bootstrap_token": "",
+			"application":     "",
+			"ttl":             0,
+			"max_ttl":         0,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "clear update should succeed: %v", resp)
+
+	role, err := b.getRole(ctx, s, "deploy")
+	require.NoError(t, err)
+	require.Equal(t, "write", role.Scope)
+	require.Empty(t, role.Description)
+	require.Empty(t, role.Username)
+	require.Empty(t, role.BootstrapToken)
+	require.Empty(t, role.Application)
+	require.Zero(t, role.TTL)
+	require.Zero(t, role.MaxTTL)
+}
+
+func TestRole_ConcurrentUpdatesMergeWithLatestState(t *testing.T) {
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testRoleCreate(t, b, s, "deploy", map[string]interface{}{"scope": "read"})
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	update := func(data map[string]interface{}) {
+		defer wg.Done()
+		<-start
+		resp, err := b.HandleRequest(ctx, &logical.Request{
+			Operation: logical.UpdateOperation, Path: "role/deploy", Storage: s, Data: data,
+		})
+		if err != nil {
+			errs <- err
+			return
+		}
+		if resp != nil && resp.IsError() {
+			errs <- resp.Error()
+		}
+	}
+
+	wg.Add(2)
+	go update(map[string]interface{}{"description": "merged", "ttl": "30m"})
+	go update(map[string]interface{}{"application": "ci-app", "max_ttl": "2h"})
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	role, err := b.getRole(ctx, s, "deploy")
+	require.NoError(t, err)
+	require.Equal(t, "merged", role.Description)
+	require.Equal(t, "ci-app", role.Application)
+	require.Equal(t, 30*time.Minute, role.TTL)
+	require.Equal(t, 2*time.Hour, role.MaxTTL)
 }
 
 // TestRole_SchemaUpgrade confirms a role persisted before the username field was

@@ -88,9 +88,10 @@ type mockAAP struct {
 	mintApps   map[int64]int64  // token id -> application id recorded at mint
 	mintDescs  map[int64]string // token id -> description sent at mint
 
-	createDelay time.Duration
-	failVerify  bool
-	failRevoke  bool
+	createDelay         time.Duration
+	failVerify          bool
+	failRevoke          bool
+	abortCreateResponse bool
 
 	// ignoreApp reproduces an AAP that drops the requested application binding
 	// (mints a personal token regardless), so the application guard can be tested.
@@ -180,6 +181,12 @@ func (m *mockAAP) mintDescFor(id int64) string {
 	return m.mintDescs[id]
 }
 
+func requireMarkedDescription(tb testing.TB, got, base string) {
+	tb.Helper()
+	require.True(tb, strings.HasPrefix(got, base), "description %q should start with %q", got, base)
+	require.Contains(tb, got, tokenRequestMarkerPrefix)
+}
+
 // handleUsers serves the ?username= lookup ResolveUserID performs.
 func (m *mockAAP) handleUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := m.ownerFor(r); !ok {
@@ -232,10 +239,21 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"detail":"verification failed"}`, http.StatusInternalServerError)
 			return
 		}
-		// Connection verification (VerifyToken) lists the tokens collection.
+		results := []map[string]interface{}{}
+		description := r.URL.Query().Get("description")
+		for id, scope := range m.live {
+			desc := m.mintDescs[id]
+			if description != "" && desc != description {
+				continue
+			}
+			results = append(results, map[string]interface{}{
+				"id": id, "user": m.mintUsers[id], "scope": scope,
+				"application": m.mintApps[id], "description": desc,
+			})
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"results": []interface{}{}})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"results": results})
 
 	case r.Method == http.MethodGet && suffix != "":
 		// Item read (tokenOwner) returns the token's owner.
@@ -282,6 +300,9 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		tokenValue := "secret-token-" + strconv.FormatInt(id, 10)
 		m.identities["Bearer "+tokenValue] = callerID
 		m.created++
+		if m.abortCreateResponse {
+			panic(http.ErrAbortHandler)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{

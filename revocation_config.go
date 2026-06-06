@@ -1,15 +1,19 @@
 package aap
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 const (
-	revocationAddressKey       = "revocation_address"
-	revocationTokenKey         = "revocation_token"
-	revocationUsernameKey      = "revocation_username"
-	revocationPasswordKey      = "revocation_password"
-	revocationTokensAPIPathKey = "revocation_tokens_api_path"
-	revocationCACertKey        = "revocation_ca_cert"
-	revocationSkipTLSVerifyKey = "revocation_skip_tls_verify"
+	revocationAddressKey        = "revocation_address"
+	revocationTokenKey          = "revocation_token"
+	revocationUsernameKey       = "revocation_username"
+	revocationPasswordKey       = "revocation_password"
+	revocationTokensAPIPathKey  = "revocation_tokens_api_path"
+	revocationCACertKey         = "revocation_ca_cert"
+	revocationSkipTLSVerifyKey  = "revocation_skip_tls_verify"
+	revocationRequestTimeoutKey = "revocation_request_timeout"
 )
 
 func cloneConfig(config *aapConfig) *aapConfig {
@@ -44,6 +48,9 @@ func addRevocationData(data map[string]interface{}, config *aapConfig) {
 	data[revocationTokensAPIPathKey] = config.TokensAPIPath
 	data[revocationCACertKey] = config.CACert
 	data[revocationSkipTLSVerifyKey] = config.SkipTLSVerify
+	if config.RequestTimeout > 0 {
+		data[revocationRequestTimeoutKey] = int64(config.RequestTimeout.Seconds())
+	}
 }
 
 func configFromRevocationData(data map[string]interface{}) (*aapConfig, bool, error) {
@@ -91,6 +98,11 @@ func configFromRevocationData(data map[string]interface{}) (*aapConfig, bool, er
 		}
 		config.SkipTLSVerify = skip
 	}
+	if seconds, ok, err := optionalInt64FromData(data, revocationRequestTimeoutKey); err != nil {
+		return nil, true, err
+	} else if ok && seconds > 0 {
+		config.RequestTimeout = time.Duration(seconds) * time.Second
+	}
 
 	return config, true, nil
 }
@@ -119,4 +131,28 @@ func optionalStringFromData(data map[string]interface{}, key string) (string, er
 		return "", fmt.Errorf("%s must be a string", key)
 	}
 	return s, nil
+}
+
+func optionalInt64FromData(data map[string]interface{}, key string) (int64, bool, error) {
+	value, ok := data[key]
+	if !ok {
+		return 0, false, nil
+	}
+	switch v := value.(type) {
+	case int:
+		return int64(v), true, nil
+	case int64:
+		return v, true, nil
+	case float64:
+		if v != float64(int64(v)) {
+			return 0, true, fmt.Errorf("%s must be a whole number of seconds", key)
+		}
+		return int64(v), true, nil
+	default:
+		n, err := coerceInt64(value, key)
+		if err != nil {
+			return 0, true, err
+		}
+		return n, true, nil
+	}
 }

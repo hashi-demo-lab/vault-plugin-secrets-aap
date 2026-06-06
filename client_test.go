@@ -167,6 +167,19 @@ func TestClient_CreateToken_BindsApplication(t *testing.T) {
 	require.Equal(t, int64(20), app)
 }
 
+func TestClient_CreateTokenRecoveringSweepsAmbiguousPostFailure(t *testing.T) {
+	m := newMockAAP("admin-token")
+	m.abortCreateResponse = true
+	srv := m.server(t)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "admin-token")
+	_, err := c.createTokenForAppRecovering(context.Background(), "read", "unique-recovery-marker", 0)
+	require.Error(t, err)
+	require.Equal(t, 0, m.liveCount(), "token committed before a lost response must be swept")
+	require.True(t, m.wasRevoked(100), "the committed token should be revoked by description recovery")
+}
+
 func TestClient_authenticatorFromConfig(t *testing.T) {
 	a, err := authenticatorFromConfig(&aapConfig{Token: "t"})
 	require.NoError(t, err)
