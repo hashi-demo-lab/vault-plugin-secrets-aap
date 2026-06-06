@@ -302,6 +302,14 @@ func (c *aapClient) CreateToken(ctx context.Context, scope, description string) 
 // settings and ignores any client-supplied per-token "expires", so the engine
 // does not attempt to set one — the Vault lease is the per-token clock.
 func (c *aapClient) createTokenForApp(ctx context.Context, scope, description string, applicationID int64) (*aapToken, error) {
+	return c.createTokenForAppInternal(ctx, scope, description, applicationID, false)
+}
+
+func (c *aapClient) createTokenForAppRecovering(ctx context.Context, scope, description string, applicationID int64) (*aapToken, error) {
+	return c.createTokenForAppInternal(ctx, scope, description, applicationID, true)
+}
+
+func (c *aapClient) createTokenForAppInternal(ctx context.Context, scope, description string, applicationID int64, recoverAmbiguousCreate bool) (*aapToken, error) {
 	reqBody := map[string]interface{}{
 		"scope":       scope,
 		"description": description,
@@ -322,6 +330,13 @@ func (c *aapClient) createTokenForApp(ctx context.Context, scope, description st
 
 	body, status, err := c.do(req)
 	if err != nil {
+		if recoverAmbiguousCreate {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHTTPTimeout)
+			defer cancel()
+			if cleanupErr := c.revokeTokensByDescription(cleanupCtx, description); cleanupErr != nil {
+				return nil, fmt.Errorf("%w; additionally failed to sweep tokens with description %q after ambiguous create failure: %v", err, description, cleanupErr)
+			}
+		}
 		return nil, err
 	}
 	if status != http.StatusCreated && status != http.StatusOK {
@@ -339,6 +354,48 @@ func (c *aapClient) createTokenForApp(ctx context.Context, scope, description st
 		return nil, fmt.Errorf("AAP returned an invalid token id")
 	}
 	return &token, nil
+}
+
+func (c *aapClient) tokenIDsByDescription(ctx context.Context, description string) ([]int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.tokensURL("?description="+url.QueryEscape(description)), nil)
+	if err != nil {
+		return nil, err
+	}
+	body, status, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("AAP token lookup by description failed (HTTP %d): %s", status, truncate(body))
+	}
+
+	var list struct {
+		Results []aapToken `json:"results"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, fmt.Errorf("failed to decode AAP token lookup by description: %w", err)
+	}
+
+	ids := make([]int64, 0, len(list.Results))
+	for _, token := range list.Results {
+		if token.Description == description && token.ID > 0 {
+			ids = append(ids, token.ID)
+		}
+	}
+	return ids, nil
+}
+
+func (c *aapClient) revokeTokensByDescription(ctx context.Context, description string) error {
+	ids, err := c.tokenIDsByDescription(ctx, description)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := c.RevokeToken(ctx, id); err != nil {
+			return fmt.Errorf("revoke token %d: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // VerifyToken performs a lightweight authenticated GET against the tokens

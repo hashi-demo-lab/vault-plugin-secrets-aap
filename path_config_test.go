@@ -2,6 +2,7 @@ package aap
 
 import (
 	"context"
+	"encoding/pem"
 	"testing"
 
 	"github.com/hashicorp/vault/sdk/logical"
@@ -216,6 +217,53 @@ func TestConfig_BasicAuth(t *testing.T) {
 	require.Equal(t, "svc-admin", resp.Data["username"])
 	require.Equal(t, true, resp.Data["password_set"])
 	require.NotContains(t, resp.Data, "password", "password must never be returned")
+}
+
+func TestConfig_UpdateCanSetAndClearZeroValueFields(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+
+	caPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"token":                    "admin-token",
+			"ca_cert":                  caPEM,
+			"skip_tls_verify":          false,
+			"request_timeout":          0,
+			"token_description_prefix": "",
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "zero-value update should succeed: %v", resp)
+
+	cfg, err := getConfig(ctx, s)
+	require.NoError(t, err)
+	require.Equal(t, caPEM, cfg.CACert)
+	require.False(t, cfg.SkipTLSVerify)
+	require.Zero(t, cfg.RequestTimeout)
+	require.Empty(t, cfg.TokenDescriptionPrefix)
+
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"token":           "admin-token",
+			"ca_cert":         "",
+			"skip_tls_verify": true,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "empty ca_cert update should succeed: %v", resp)
+
+	cfg, err = getConfig(ctx, s)
+	require.NoError(t, err)
+	require.Empty(t, cfg.CACert)
+	require.True(t, cfg.SkipTLSVerify)
 }
 
 func TestConfig_UpdateTokenClearsRotateRootTokenID(t *testing.T) {

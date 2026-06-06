@@ -298,6 +298,9 @@ func TestCredentials_PerUserMint_OwnershipGuardReportsRevokeFailure(t *testing.T
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "failed to revoke minted token")
 	require.Equal(t, 1, m.liveCount(), "the cleanup failure should be visible because the token remains live")
+	wals, err := framework.ListWAL(ctx, s)
+	require.NoError(t, err)
+	require.Len(t, wals, 1, "failed cleanup should leave WAL retry state")
 }
 
 // TestCredentials_PerUserMint_UnknownUser surfaces a clear error when the role's
@@ -466,15 +469,27 @@ func TestCredentials_RevokeAfterConfigDeletedUsesLeaseConfig(t *testing.T) {
 
 	b, s := getTestBackend(t)
 	ctx := context.Background()
-	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	resp, err := writeConfigWith(t, b, s, map[string]interface{}{
+		"address":         srv.URL,
+		"token":           "admin-token",
+		"tokens_api_path": "/api/gateway/v1",
+		"skip_tls_verify": true,
+		"request_timeout": "45s",
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError())
 	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "read", "ttl": "1h"})
 
-	resp, err := b.HandleRequest(ctx, &logical.Request{
+	resp, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.ReadOperation, Path: "creds/ci", Storage: s,
 	})
 	require.NoError(t, err)
 	tokenID, err := strconv.ParseInt(resp.Secret.InternalData["token_id"].(string), 10, 64)
 	require.NoError(t, err)
+	revocationConfig, ok, err := configFromRevocationData(resp.Secret.InternalData)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, 45*time.Second, revocationConfig.RequestTimeout)
 
 	_, err = b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.DeleteOperation, Path: "config", Storage: s,

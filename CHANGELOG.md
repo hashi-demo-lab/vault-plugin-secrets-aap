@@ -28,6 +28,11 @@ All notable changes to this project are documented here. The format is based on
 ### Changed
 - Role `scope` now defaults to least-privilege **`read`**; set `scope=write` explicitly when
   callers need mutation privileges.
+- Dynamically minted AAP token descriptions now include a unique `vault-aap-request:<id>`
+  marker after the configured prefix/role description, enabling exact cleanup after
+  ambiguous create failures.
+- Terraform examples no longer manage `aap/config`; write the privileged AAP connection
+  out of band to avoid persisting the config token in Terraform state.
 - `config` auth updates now replace the active auth scheme: bearer-token writes clear basic
   credentials, and username/password writes clear bearer credentials and rotate-root token id.
 - Role writes now reject `username` without `bootstrap_token`, surfacing per-user
@@ -43,6 +48,8 @@ All notable changes to this project are documented here. The format is based on
 - Per-role `bootstrap_token` and config `password` are write-only (never returned on read).
 - Terraform examples no longer read dynamic credentials into state; dynamic tokens are read
   at consume time with `vault read`.
+- Failed post-mint verification cleanup and failed old-root revocation now retain WAL retry
+  state instead of relying only on a one-shot cleanup attempt.
 
 ## [0.1.0] — baseline
 

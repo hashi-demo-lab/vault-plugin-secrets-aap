@@ -8,6 +8,7 @@ package aap
 
 import (
 	"context"
+	"hash/fnv"
 	"strings"
 	"sync"
 
@@ -35,8 +36,11 @@ type aapBackend struct {
 	*framework.Backend
 	lock       sync.RWMutex
 	configLock sync.Mutex
+	roleLocks  [roleLockStripes]sync.Mutex
 	client     *aapClient
 }
+
+const roleLockStripes = 64
 
 // backend builds the framework.Backend wiring together every path and the
 // dynamic secret type.
@@ -87,6 +91,14 @@ func (b *aapBackend) reset() {
 	b.lock.Lock()
 	defer b.lock.Unlock()
 	b.client = nil
+}
+
+func (b *aapBackend) lockRole(name string) func() {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	mu := &b.roleLocks[int(h.Sum32())%len(b.roleLocks)]
+	mu.Lock()
+	return mu.Unlock
 }
 
 // invalidate is called by Vault when a storage key changes (including via

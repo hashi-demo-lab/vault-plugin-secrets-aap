@@ -81,6 +81,11 @@ Provide **one** auth scheme: a bearer `token`, or basic `username`+`password`.
 | `tokens_api_path` | no | `/api/gateway/v1` | `/api/gateway/v1` (2.5) or `/api/controller/v2` (2.4) |
 | `ca_cert` | no | — | PEM CA to trust for the AAP endpoint |
 | `skip_tls_verify` | no | `false` | skip TLS verification (insecure; lab only) |
+| `request_timeout` | no | `30s` | per-request timeout for AAP API calls |
+| `token_description_prefix` | no | — | prefix for minted token descriptions; the engine also appends a unique request marker for safe orphan cleanup |
+| `rotation_period` | no | — | automated root-token rotation interval (Enterprise Rotation Manager) |
+| `rotation_schedule` / `rotation_window` | no | — | cron-style automated root-token rotation schedule and allowed window |
+| `disable_automated_rotation` | no | `false` | deregister/suppress the automated root-token rotation job |
 
 The auth scheme is pluggable behind an internal `authenticator` interface (bearer and
 basic today); `vault read aap/config` reports `auth_type`. Bearer is recommended — a
@@ -89,12 +94,17 @@ are always bearer regardless of the engine's own scheme. Updating `config` with 
 `token` clears any stored basic credentials; updating it with `username`+`password` clears
 any stored bearer token and root-rotation token id.
 
+Every dynamically minted token description includes a short `vault-aap-request:<id>`
+marker after the configured prefix and role description. The marker lets the engine safely
+find and revoke tokens if AAP commits a create request but the response is lost before
+Vault can record the token id.
+
 ### Role fields
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `scope` | `read` | `read` or `write`; set `write` explicitly when callers need mutation privileges |
-| `description` | — | description applied to minted AAP tokens |
+| `description` | — | base description applied to minted AAP tokens before the engine appends its request marker |
 | `username` | — | optional AAP user the minted token must be owned by; requires `bootstrap_token` |
 | `bootstrap_token` | — | that user's own AAP token, so tokens are minted *as* them (write-only) |
 | `application` | — | optional AAP OAuth2 application name to bind minted tokens to |

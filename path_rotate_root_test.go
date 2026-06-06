@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/stretchr/testify/require"
 )
@@ -138,6 +139,49 @@ func TestRotateRoot_ConcurrentRotationsDoNotOrphanIntermediateToken(t *testing.T
 	require.NotZero(t, cfg.TokenID)
 	require.Equal(t, 1, m.liveCount(), "only the currently configured root token should remain live")
 	require.False(t, m.wasRevoked(cfg.TokenID), "the configured root token should be the surviving token")
+}
+
+func TestRotateRoot_OldTokenRevokeFailureRecordsRetryWAL(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config/rotate-root", Storage: s,
+	})
+	require.NoError(t, err)
+	cfg, err := getConfig(ctx, s)
+	require.NoError(t, err)
+	firstID := cfg.TokenID
+
+	m.failRevoke = true
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config/rotate-root", Storage: s,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Len(t, resp.Warnings, 1)
+	require.Contains(t, resp.Warnings[0], "retry recorded")
+	require.Equal(t, 2, m.liveCount(), "old and new root tokens are live until retry runs")
+
+	wals, err := framework.ListWAL(ctx, s)
+	require.NoError(t, err)
+	require.Len(t, wals, 1)
+
+	m.failRevoke = false
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.RollbackOperation, Storage: s, Data: map[string]interface{}{"immediate": true},
+	})
+	require.NoError(t, err)
+	require.True(t, m.wasRevoked(firstID), "WAL rollback should retry old-root cleanup")
+	cfg, err = getConfig(ctx, s)
+	require.NoError(t, err)
+	require.False(t, m.wasRevoked(cfg.TokenID), "current root token must remain live")
+	require.Equal(t, 1, m.liveCount())
 }
 
 // TestRevoke_FallsBackToCurrentConfig confirms that when the lease's snapshot

@@ -171,8 +171,12 @@ func (b *aapBackend) pathRolesWrite(ctx context.Context, req *logical.Request, d
 	if !ok {
 		return logical.ErrorResponse("missing role name"), nil
 	}
+	roleName := name.(string)
 
-	role, err := b.getRole(ctx, req.Storage, name.(string))
+	unlock := b.lockRole(roleName)
+	defer unlock()
+
+	role, err := b.getRole(ctx, req.Storage, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -222,14 +226,18 @@ func (b *aapBackend) pathRolesWrite(ctx context.Context, req *logical.Request, d
 		return logical.ErrorResponse("ttl (%s) cannot exceed max_ttl (%s)", role.TTL, role.MaxTTL), nil
 	}
 
-	if err := b.setRole(ctx, req.Storage, name.(string), role); err != nil {
+	if err := b.setRole(ctx, req.Storage, roleName, role); err != nil {
 		return nil, err
 	}
 	return nil, nil
 }
 
 func (b *aapBackend) pathRolesDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	if err := req.Storage.Delete(ctx, "role/"+data.Get("name").(string)); err != nil {
+	roleName := data.Get("name").(string)
+	unlock := b.lockRole(roleName)
+	defer unlock()
+
+	if err := req.Storage.Delete(ctx, "role/"+roleName); err != nil {
 		return nil, fmt.Errorf("error deleting AAP role: %w", err)
 	}
 	return nil, nil

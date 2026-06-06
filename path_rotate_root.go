@@ -3,6 +3,7 @@ package aap
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
@@ -115,7 +116,12 @@ func (b *aapBackend) rotateRoot(ctx context.Context, storage logical.Storage) (*
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHTTPTimeout)
 		defer cancel()
 		if err := newClientForVerify.RevokeToken(cleanupCtx, oldTokenID); err != nil {
-			resp.AddWarning(fmt.Sprintf("rotated root token, but revoking the previous token (id %d) failed: %s", oldTokenID, err))
+			walID, walErr := framework.PutWAL(cleanupCtx, storage, walTypeToken, newWALToken(strconv.FormatInt(oldTokenID, 10), "config/rotate-root", newConfig))
+			if walErr != nil {
+				resp.AddWarning(fmt.Sprintf("rotated root token, but revoking the previous token (id %d) failed and retry state could not be recorded: %s; WAL error: %s", oldTokenID, err, walErr))
+			} else {
+				resp.AddWarning(fmt.Sprintf("rotated root token, but revoking the previous token (id %d) failed: %s; retry recorded in WAL entry %s", oldTokenID, err, walID))
+			}
 		}
 	} else {
 		resp.AddWarning("rotated root token; the previous token's id is unknown (it was operator-supplied), so it was not revoked — revoke it in AAP manually")

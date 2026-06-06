@@ -114,7 +114,7 @@ func TestCreds_DescriptionPrefixApplied(t *testing.T) {
 	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "read", "description": "deploy", "ttl": "1h"})
 
 	id := mintCreds(t, b, s, "ci")
-	require.Equal(t, "vault:ci:deploy", m.mintDescFor(id))
+	requireMarkedDescription(t, m.mintDescFor(id), "vault:ci:deploy")
 }
 
 func TestCreds_NoPrefixLeavesDescriptionUnchanged(t *testing.T) {
@@ -127,7 +127,7 @@ func TestCreds_NoPrefixLeavesDescriptionUnchanged(t *testing.T) {
 	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "read", "description": "deploy", "ttl": "1h"})
 
 	id := mintCreds(t, b, s, "ci")
-	require.Equal(t, "deploy", m.mintDescFor(id))
+	requireMarkedDescription(t, m.mintDescFor(id), "deploy")
 }
 
 // Note: a "token_expiry_buffer" / server-side expiry backstop was prototyped and

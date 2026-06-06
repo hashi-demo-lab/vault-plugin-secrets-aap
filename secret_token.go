@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
+	uuid "github.com/hashicorp/go-uuid"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
 )
@@ -50,22 +52,24 @@ func (b *aapBackend) aapToken() *framework.Secret {
 	}
 }
 
+const tokenRequestMarkerPrefix = "vault-aap-request:"
+
 // createToken mints a new AAP token for the given role using the configured
-// client.
-func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *aapRoleEntry) (*aapToken, *aapConfig, error) {
+// client, then records rollback state before any post-mint verification calls.
+func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, roleName string, role *aapRoleEntry) (*aapToken, *aapConfig, string, error) {
 	config, err := getConfig(ctx, s)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	if config == nil {
-		return nil, nil, errBackendNotConfigured
+		return nil, nil, "", errBackendNotConfigured
 	}
 
 	// adminClient uses the engine's configured (privileged) token. It is used to
 	// resolve usernames and to read/revoke any token (token IDs are global).
 	adminClient, err := newClient(config)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	// Per-user issuance: AAP owns a minted token to whichever identity makes the
@@ -78,7 +82,7 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 		// engine's own config authenticates.
 		mintClient, err = newClientWithAuth(config, bearerAuth{token: role.BootstrapToken})
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid bootstrap_token for role: %w", err)
+			return nil, nil, "", fmt.Errorf("invalid bootstrap_token for role: %w", err)
 		}
 	}
 
@@ -88,22 +92,45 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 	if role.Application != "" {
 		applicationID, err = adminClient.ResolveApplicationID(ctx, role.Application)
 		if err != nil {
-			return nil, nil, fmt.Errorf("error resolving AAP application %q: %w", role.Application, err)
+			return nil, nil, "", fmt.Errorf("error resolving AAP application %q: %w", role.Application, err)
+		}
+	}
+
+	var wantUserID int64
+	if role.Username != "" {
+		wantUserID, err = adminClient.ResolveUserID(ctx, role.Username)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("error resolving AAP user %q: %w", role.Username, err)
 		}
 	}
 
 	// Prefix the description so engine-issued tokens are identifiable — and
 	// sweepable — in AAP. (AAP controls token expiry globally via OAUTH2_PROVIDER
 	// and ignores any client-supplied per-token expiry, so the description is the
-	// engine's only lever for tagging orphaned tokens for cleanup.)
+	// engine's only lever for tagging orphaned tokens for cleanup.) A unique
+	// request marker lets the client safely clean up ambiguous POST timeouts.
 	description := role.Description
 	if config.TokenDescriptionPrefix != "" {
 		description = config.TokenDescriptionPrefix + description
 	}
-
-	token, err := mintClient.createTokenForApp(ctx, role.Scope, description, applicationID)
+	description, err = descriptionWithRequestMarker(description)
 	if err != nil {
-		return nil, nil, fmt.Errorf("error creating AAP token: %w", err)
+		return nil, nil, "", err
+	}
+
+	token, err := mintClient.createTokenForAppRecovering(ctx, role.Scope, description, applicationID)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("error creating AAP token: %w", err)
+	}
+
+	revocationConfig := cloneConfig(config)
+	tokenIDStr := strconv.FormatInt(token.ID, 10)
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), defaultHTTPTimeout)
+	defer cancelCleanup()
+	walID, err := framework.PutWAL(cleanupCtx, s, walTypeToken, newWALToken(tokenIDStr, roleName, revocationConfig))
+	if err != nil {
+		revokeBestEffort(cleanupCtx, revocationConfig, token.ID)
+		return nil, nil, "", fmt.Errorf("failed to write WAL for minted token: %w", err)
 	}
 
 	// Application-binding guard: confirm the minted token is bound to the intended
@@ -111,11 +138,11 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 	if applicationID > 0 {
 		boundApp, verr := adminClient.tokenApplication(ctx, token.ID)
 		if verr != nil {
-			return nil, nil, revokeMintedTokenAfterVerificationFailure(ctx, adminClient, token.ID,
+			return nil, nil, "", revokeMintedTokenAfterVerificationFailure(ctx, s, walID, adminClient, token.ID,
 				fmt.Errorf("could not verify application binding of minted token: %w", verr))
 		}
 		if boundApp != applicationID {
-			return nil, nil, revokeMintedTokenAfterVerificationFailure(ctx, adminClient, token.ID,
+			return nil, nil, "", revokeMintedTokenAfterVerificationFailure(ctx, s, walID, adminClient, token.ID,
 				fmt.Errorf("token was not bound to application %q (id %d); AAP bound it to %d", role.Application, applicationID, boundApp))
 		}
 	}
@@ -126,35 +153,45 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 	// misconfigured bootstrap_token, and the case where no bootstrap_token was
 	// supplied (so the token was minted as the engine identity).
 	if role.Username != "" {
-		wantID, rerr := adminClient.ResolveUserID(ctx, role.Username)
-		if rerr != nil {
-			return nil, nil, revokeMintedTokenAfterVerificationFailure(ctx, adminClient, token.ID,
-				fmt.Errorf("error resolving AAP user %q: %w", role.Username, rerr))
-		}
 		owner, verr := adminClient.tokenOwner(ctx, token.ID)
 		if verr != nil {
-			return nil, nil, revokeMintedTokenAfterVerificationFailure(ctx, adminClient, token.ID,
+			return nil, nil, "", revokeMintedTokenAfterVerificationFailure(ctx, s, walID, adminClient, token.ID,
 				fmt.Errorf("could not verify owner of token minted for %q: %w", role.Username, verr))
 		}
-		if owner != wantID {
+		if owner != wantUserID {
 			hint := ""
 			if role.BootstrapToken == "" {
 				hint = " (set bootstrap_token to that user's own AAP token so the token is minted as them)"
 			}
-			return nil, nil, revokeMintedTokenAfterVerificationFailure(ctx, adminClient, token.ID,
-				fmt.Errorf("token was minted for user id %d, not %q (id %d)%s", owner, role.Username, wantID, hint))
+			return nil, nil, "", revokeMintedTokenAfterVerificationFailure(ctx, s, walID, adminClient, token.ID,
+				fmt.Errorf("token was minted for user id %d, not %q (id %d)%s", owner, role.Username, wantUserID, hint))
 		}
 	}
 
-	return token, cloneConfig(config), nil
+	return token, revocationConfig, walID, nil
 }
 
-func revokeMintedTokenAfterVerificationFailure(ctx context.Context, client *aapClient, id int64, cause error) error {
+func descriptionWithRequestMarker(description string) (string, error) {
+	requestID, err := uuid.GenerateUUID()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate token request marker: %w", err)
+	}
+	marker := tokenRequestMarkerPrefix + requestID
+	if strings.TrimSpace(description) == "" {
+		return marker, nil
+	}
+	return description + " " + marker, nil
+}
+
+func revokeMintedTokenAfterVerificationFailure(ctx context.Context, s logical.Storage, walID string, client *aapClient, id int64, cause error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHTTPTimeout)
 	defer cancel()
 
 	if err := client.RevokeToken(cleanupCtx, id); err != nil {
-		return fmt.Errorf("%w; additionally failed to revoke minted token %d after verification failure: %v", cause, id, err)
+		return fmt.Errorf("%w; additionally failed to revoke minted token %d after verification failure; WAL retained for retry: %v", cause, id, err)
+	}
+	if err := framework.DeleteWAL(cleanupCtx, s, walID); err != nil {
+		return fmt.Errorf("%w; additionally failed to delete WAL for revoked token %d after verification failure: %v", cause, id, err)
 	}
 	return cause
 }
@@ -238,15 +275,23 @@ func (b *aapBackend) tokenRenew(ctx context.Context, req *logical.Request, _ *fr
 // cases are defensive (e.g. leases written before that change, where a JSON
 // number decodes to float64).
 func coerceTokenID(raw interface{}) (int64, error) {
+	return coerceInt64(raw, "token_id")
+}
+
+func coerceInt64(raw interface{}, field string) (int64, error) {
 	switch v := raw.(type) {
 	case string:
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
-			return 0, fmt.Errorf("invalid token_id %q: %w", v, err)
+			return 0, fmt.Errorf("invalid %s %q: %w", field, v, err)
 		}
 		return id, nil
 	case json.Number:
-		return v.Int64()
+		id, err := v.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("invalid %s %q: %w", field, v, err)
+		}
+		return id, nil
 	case int64:
 		return v, nil
 	case int:
@@ -255,6 +300,6 @@ func coerceTokenID(raw interface{}) (int64, error) {
 		// Legacy numeric form; exact for AAP-scale ids (well under 2^53).
 		return int64(v), nil
 	default:
-		return 0, fmt.Errorf("unexpected token_id type %T", raw)
+		return 0, fmt.Errorf("unexpected %s type %T", field, raw)
 	}
 }

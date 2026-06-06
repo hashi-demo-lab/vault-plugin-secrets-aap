@@ -52,7 +52,7 @@ drive the design:
 
 | Vault concept | Purpose | Fields |
 |---------------|---------|--------|
-| **Config** (`config`) | AAP connection | `address`, auth: `token` **or** `username`+`password` (sensitive), `tokens_api_path`, `ca_cert`, `skip_tls_verify`; internal `token_id` (rotate-root) |
+| **Config** (`config`) | AAP connection | `address`, auth: `token` **or** `username`+`password` (sensitive), `tokens_api_path`, `ca_cert`, `skip_tls_verify`, `request_timeout`, `token_description_prefix`, automated rotation fields; internal `token_id` (rotate-root) |
 | **Role** (`role/<name>`) | Issuance policy | `scope` (read\|write, default `read`), `description`, `username` (owner guard, requires `bootstrap_token`), `bootstrap_token` (sensitive), `application`, `ttl`, `max_ttl` |
 | **Credentials** (`creds/<name>`) | Mint a leased token | returns `token`, `token_id`, `scope`, `expires` |
 
@@ -112,6 +112,11 @@ GET aap/creds/ci
 { "lease_id": "aap/creds/ci/<id>", "lease_duration": 3600, "renewable": true,
   "data": { "token": "...", "token_id": 31, "scope": "read", "expires": "..." } }
 ```
+
+The AAP-side token description is the configured `token_description_prefix` plus
+the role's base `description`, followed by a unique `vault-aap-request:<id>`
+marker. That marker gives the engine an exact cleanup target when AAP commits a
+create request but the HTTP response is lost before Vault sees the token id.
 
 ## Authentication schemes (pluggable)
 

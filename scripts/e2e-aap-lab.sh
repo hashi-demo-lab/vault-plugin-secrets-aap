@@ -103,8 +103,9 @@ EXPIRES="$(jq -r '.expires' "${AAP_BODY}")"
 echo "description=${DESC}"
 echo "expires=${EXPIRES} (AAP-controlled, not settable by the engine)"
 
-[[ "${DESC}" == "vault:e2e:ci-deploy" ]] || fail "description prefix not applied (got ${DESC})"
-pass "description prefix applied in AAP (enables orphan sweeps by prefix)"
+[[ "${DESC}" == vault:e2e:ci-deploy* ]] || fail "description prefix not applied (got ${DESC})"
+[[ "${DESC}" == *vault-aap-request:* ]] || fail "request marker not applied (got ${DESC})"
+pass "description prefix and request marker applied in AAP (enables orphan sweeps)"
 
 echo "==> revoking the lease and confirming AAP deletes the token"
 vault lease revoke "${LEASE_ID}"
