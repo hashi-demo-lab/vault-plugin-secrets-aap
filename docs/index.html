@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vault AAP Secrets Engine · Dynamic Ansible Automation Platform tokens</title>
+  <meta name="description" content="A HashiCorp Vault secrets engine that dynamically mints and revokes Ansible Automation Platform (AAP) OAuth2 tokens. Architecture, end-to-end lifecycle, and the engineering behind it." />
+  <style>
+    /* ===== Self-hosted IBM Plex (works offline / on restricted networks) ===== */
+    @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 300; font-display: swap; src: url('fonts/IBMPlexSans-Light.woff2') format('woff2'); }
+    @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/IBMPlexSans-Regular.woff2') format('woff2'); }
+    @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 500; font-display: swap; src: url('fonts/IBMPlexSans-Medium.woff2') format('woff2'); }
+    @font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 600; font-display: swap; src: url('fonts/IBMPlexSans-SemiBold.woff2') format('woff2'); }
+    @font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url('fonts/IBMPlexMono-Regular.woff2') format('woff2'); }
+    @font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 500; font-display: swap; src: url('fonts/IBMPlexMono-Medium.woff2') format('woff2'); }
+    @font-face { font-family: 'IBM Plex Mono'; font-style: normal; font-weight: 600; font-display: swap; src: url('fonts/IBMPlexMono-SemiBold.woff2') format('woff2'); }
+  </style>
+  <style>
+    /* ===== IBM Carbon — Dark theme tokens ===== */
+    :root {
+      --cds-background: #161616;
+      --cds-layer-01: #262626;
+      --cds-layer-02: #393939;
+      --cds-layer-03: #2e2e2e;
+      --cds-border-subtle: #393939;
+      --cds-border-strong: #525252;
+      --cds-text-primary: #f4f4f4;
+      --cds-text-secondary: #c6c6c6;
+      --cds-text-helper: #8d8d8d;
+      --cds-interactive: #0f62fe;
+      --cds-blue-40: #78a9ff;
+      --cds-blue-30: #a6c8ff;
+      --cds-support-success: #24a148;
+      --cds-support-warning: #f1c21b;
+      --cds-support-error: #da1e28;
+
+      /* Stage accents (shared with the sibling zero-trust deck) */
+      --acc-client: #5BC8DE; /* caller / action */
+      --acc-vault:  #FFD814; /* Vault */
+      --acc-aap:    #FF8F8F; /* AAP / Red Hat */
+      --acc-token:  #84E6AC; /* minted token / done */
+      --acc-id:     #78a9ff; /* identity */
+      --acc-tf:     #B89BFD; /* terraform / archetype */
+
+      --maxw: 1200px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; padding: 0;
+      background: var(--cds-background);
+      color: var(--cds-text-primary);
+      font-family: 'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif;
+      font-weight: 400;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      line-height: 1.5;
+    }
+    a { color: var(--cds-blue-40); text-decoration: none; }
+    a:hover { color: var(--cds-blue-30); text-decoration: underline; }
+    code, .mono { font-family: 'IBM Plex Mono', 'Menlo', monospace; }
+
+    /* ===== Masthead ===== */
+    .masthead {
+      height: 48px; background: #161616;
+      border-bottom: 1px solid var(--cds-border-subtle);
+      display: flex; align-items: stretch;
+      position: sticky; top: 0; z-index: 60;
+    }
+    .masthead .brand {
+      display: flex; align-items: center; padding: 0 16px;
+      font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600;
+      letter-spacing: 0.32px; color: var(--cds-text-primary);
+      border-right: 1px solid var(--cds-border-subtle);
+    }
+    .masthead .brand .pipe { color: var(--cds-text-helper); margin: 0 10px; font-weight: 300; }
+    .masthead .brand .accent { color: var(--acc-vault); }
+    .masthead .title {
+      display: flex; align-items: center; padding: 0 16px;
+      font-size: 14px; color: var(--cds-text-secondary); letter-spacing: 0.16px;
+    }
+    .masthead .meta {
+      margin-left: auto; display: flex; align-items: center; gap: 16px; padding: 0 16px;
+      font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--cds-text-helper);
+      letter-spacing: 0.32px; border-left: 1px solid var(--cds-border-subtle);
+    }
+    .masthead .meta a { color: var(--cds-text-secondary); }
+    @media (max-width: 760px) { .masthead .title { display: none; } }
+
+    /* ===== Section nav (sticky) ===== */
+    .secnav {
+      position: sticky; top: 48px; z-index: 55;
+      background: #1b1b1b; border-bottom: 1px solid var(--cds-border-subtle);
+      overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch;
+    }
+    .secnav-inner { max-width: var(--maxw); margin: 0 auto; display: flex; }
+    .secnav a {
+      display: inline-flex; align-items: center; height: 40px; padding: 0 16px;
+      font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.16px;
+      color: var(--cds-text-helper); border-bottom: 2px solid transparent; flex: 0 0 auto;
+    }
+    .secnav a:hover { color: var(--cds-text-primary); text-decoration: none; background: #232323; }
+    .secnav a.active { color: var(--cds-text-primary); border-bottom-color: var(--cds-interactive); }
+
+    /* ===== Layout primitives ===== */
+    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 32px; }
+    @media (max-width: 720px) { .wrap { padding: 0 16px; } }
+    section { padding: 56px 0; border-top: 1px solid var(--cds-border-subtle); }
+    section:first-of-type { border-top: 0; }
+    .eyebrow {
+      font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600;
+      color: var(--cds-blue-40); letter-spacing: 0.32px; text-transform: uppercase; margin: 0 0 14px;
+    }
+    h2 { font-size: 32px; line-height: 1.25; font-weight: 300; margin: 0 0 14px; letter-spacing: 0; }
+    h3 { font-size: 20px; line-height: 1.4; font-weight: 600; margin: 0 0 8px; }
+    .lede { font-size: 18px; line-height: 1.55; color: var(--cds-text-secondary); font-weight: 300; max-width: 860px; margin: 0 0 8px; }
+    p { margin: 0 0 14px; }
+    .sec-intro { color: var(--cds-text-secondary); max-width: 820px; }
+    strong { font-weight: 600; color: var(--cds-text-primary); }
+    .accent-vault { color: var(--acc-vault); }
+    .accent-aap   { color: var(--acc-aap); }
+    .accent-token { color: var(--acc-token); }
+    .accent-client{ color: var(--acc-client); }
+
+    /* ===== Hero ===== */
+    .hero { padding: 72px 0 40px; }
+    .hero .kicker {
+      font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600;
+      color: var(--cds-blue-40); letter-spacing: 0.32px; margin: 0 0 16px; text-transform: uppercase;
+    }
+    .hero h1 { font-size: 52px; line-height: 1.13; font-weight: 300; margin: 0 0 20px; max-width: 960px; }
+    .hero h1 .em { color: var(--acc-vault); }
+    .hero .sub { font-size: 19px; line-height: 1.55; color: var(--cds-text-secondary); max-width: 800px; margin: 0 0 28px; font-weight: 300; }
+    @media (max-width: 720px) { .hero h1 { font-size: 36px; } }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 7px;
+      font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.16px;
+      padding: 5px 12px; border-radius: 24px; background: #21262e; color: var(--cds-text-secondary);
+      border: 1px solid var(--cds-border-subtle);
+    }
+    .pill .dot { width: 7px; height: 7px; border-radius: 50%; }
+
+    /* one-liner equation under hero */
+    .equation {
+      margin-top: 30px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+      font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: var(--cds-text-secondary);
+    }
+    .equation .box { background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle); padding: 8px 12px; border-top: 2px solid var(--ac, var(--cds-interactive)); }
+    .equation .op { color: var(--cds-text-helper); }
+
+    /* ===== Generic card grid ===== */
+    .grid { display: grid; gap: 1px; background: var(--cds-border-subtle); border: 1px solid var(--cds-border-subtle); }
+    .grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+    .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+    @media (max-width: 900px) { .grid.cols-3, .grid.cols-4 { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 600px) { .grid.cols-2, .grid.cols-3, .grid.cols-4 { grid-template-columns: 1fr; } }
+    .card { background: var(--cds-layer-01); padding: 22px; border-top: 2px solid var(--ac, transparent); }
+    .card .num { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--ac, var(--cds-blue-40)); letter-spacing: 0.32px; }
+    .card h3 { font-size: 18px; margin: 8px 0 8px; }
+    .card p { font-size: 14px; color: var(--cds-text-secondary); margin: 0; }
+    .card p + p { margin-top: 10px; }
+    .card .tag {
+      display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.32px;
+      text-transform: uppercase; color: var(--ac, var(--cds-blue-40)); font-weight: 600;
+    }
+
+    /* ===== Tables (Carbon data table) ===== */
+    .tablewrap { overflow-x: auto; border: 1px solid var(--cds-border-subtle); }
+    table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 560px; }
+    thead th {
+      background: var(--cds-layer-01); text-align: left; padding: 12px 16px;
+      font-weight: 600; font-size: 12px; letter-spacing: 0.16px; color: var(--cds-text-primary);
+      border-bottom: 1px solid var(--cds-border-strong); white-space: nowrap;
+    }
+    tbody td { padding: 11px 16px; border-bottom: 1px solid var(--cds-border-subtle); color: var(--cds-text-secondary); vertical-align: top; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: #1f1f1f; }
+    td code, th code { background: #1d1d1d; padding: 1px 6px; font-size: 12.5px; color: var(--cds-blue-30); }
+    td .ok { color: var(--acc-token); } td .warn { color: var(--cds-support-warning); } td .err { color: var(--acc-aap); }
+
+    /* ===== Code blocks ===== */
+    .code {
+      background: #0d0d0d; border: 1px solid var(--cds-border-subtle); border-left: 2px solid var(--cds-interactive);
+      padding: 16px 18px; overflow-x: auto; font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px; line-height: 1.65; color: #e0e0e0; margin: 0 0 16px;
+    }
+    .code .c { color: var(--cds-text-helper); } /* comment */
+    .code .k { color: var(--acc-vault); }       /* command/keyword */
+    .code .s { color: var(--acc-token); }        /* string */
+    .code .f { color: var(--cds-blue-30); }      /* flag/field */
+    .code .p { color: var(--acc-aap); }          /* path */
+
+    /* ===== Diagram shell ===== */
+    .figure { background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle); padding: 8px; margin: 8px 0 14px; }
+    .figure svg { display: block; width: 100%; height: auto; }
+    .figcap { font-size: 12.5px; color: var(--cds-text-helper); font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.16px; margin: 0 0 22px; padding-left: 2px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 18px; font-size: 12px; color: var(--cds-text-secondary); font-family: 'IBM Plex Mono', monospace; }
+    .legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .legend i { width: 22px; height: 0; border-top-width: 2px; border-top-style: solid; display: inline-block; }
+
+    /* ===== Callout ===== */
+    .note {
+      background: var(--cds-layer-01); border-left: 3px solid var(--ac, var(--cds-blue-40));
+      padding: 16px 18px; margin: 0 0 16px; font-size: 14px; color: var(--cds-text-secondary);
+    }
+    .note .lab { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.32px; text-transform: uppercase; color: var(--ac, var(--cds-blue-40)); font-weight: 600; display: block; margin-bottom: 6px; }
+    .note strong { color: var(--cds-text-primary); }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: start; }
+    @media (max-width: 820px) { .two-col { grid-template-columns: 1fr; gap: 20px; } }
+
+    ul.clean { margin: 0 0 14px; padding-left: 0; list-style: none; }
+    ul.clean li { position: relative; padding-left: 22px; margin-bottom: 10px; color: var(--cds-text-secondary); font-size: 14.5px; }
+    ul.clean li::before { content: "—"; position: absolute; left: 0; color: var(--cds-blue-40); font-family: 'IBM Plex Mono', monospace; }
+
+    /* ===== Footer ===== */
+    footer { border-top: 1px solid var(--cds-border-subtle); padding: 40px 0 64px; }
+    footer .wrap { display: flex; flex-wrap: wrap; gap: 24px; justify-content: space-between; align-items: baseline; }
+    footer .mono { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--cds-text-helper); letter-spacing: 0.16px; }
+    footer h4 { font-size: 14px; margin: 0 0 4px; font-weight: 600; }
+
+    .anchor { position: relative; top: -96px; visibility: hidden; }
+  </style>
+</head>
+<body>
+
+  <!-- ===== Masthead ===== -->
+  <header class="masthead">
+    <div class="brand"><span class="accent">vault</span><span class="pipe">/</span>secrets-aap</div>
+    <div class="title">Dynamic Ansible Automation Platform tokens, as a Vault secrets engine</div>
+    <div class="meta">
+      <span>MPL-2.0</span>
+      <a href="https://github.com/hashi-demo-lab/vault-plugin-secrets-aap" target="_blank" rel="noopener">GitHub ↗</a>
+    </div>
+  </header>
+
+  <!-- ===== Section nav ===== -->
+  <nav class="secnav" aria-label="Sections">
+    <div class="secnav-inner">
+      <a href="#overview">Overview</a>
+      <a href="#archetype">Why a custom engine</a>
+      <a href="#lifecycle">End-to-end lifecycle</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#model">Vault model</a>
+      <a href="#hardparts">The hard parts</a>
+      <a href="#api">API reference</a>
+      <a href="#verified">Verified behaviour</a>
+    </div>
+  </nav>
+
+  <!-- ===== Hero ===== -->
+  <div class="hero wrap" id="top">
+    <div class="kicker">HashiCorp Vault · Secrets engine · External / dynamic</div>
+    <h1>Vault becomes the single point of issuance, audit, and revocation for <span class="em">AAP tokens</span>.</h1>
+    <p class="sub">
+      A Vault secrets engine that dynamically mints and revokes <strong>Ansible Automation Platform</strong>
+      OAuth2 tokens. Each read of a credentials path mints a fresh token through AAP's REST API, hands it to
+      the caller under a Vault <strong>lease</strong>, and deletes it from AAP when the lease ends — so no
+      long-lived AAP token is ever copied into a pipeline, a tfvars file, or a CI secret store.
+    </p>
+    <div class="pill-row">
+      <span class="pill"><span class="dot" style="background:var(--acc-token)"></span>Dynamic secrets · one token per read</span>
+      <span class="pill"><span class="dot" style="background:var(--acc-vault)"></span>Renewable leases · idempotent revoke</span>
+      <span class="pill"><span class="dot" style="background:var(--acc-aap)"></span>AAP 2.5 gateway &amp; 2.4 controller</span>
+      <span class="pill"><span class="dot" style="background:var(--acc-id)"></span>Per-user &amp; application-scoped issuance</span>
+      <span class="pill"><span class="dot" style="background:var(--cds-blue-40)"></span>rotate-root · WAL crash recovery</span>
+    </div>
+
+    <div class="equation">
+      <span class="box" style="--ac:var(--acc-client)">vault read aap/creds/ci</span>
+      <span class="op">→</span>
+      <span class="box" style="--ac:var(--acc-vault)">mint via AAP REST API</span>
+      <span class="op">→</span>
+      <span class="box" style="--ac:var(--acc-token)">token under lease</span>
+      <span class="op">→</span>
+      <span class="box" style="--ac:var(--acc-aap)">lease ends → DELETE token</span>
+    </div>
+  </div>
+
+  <!-- ===== Overview ===== -->
+  <span class="anchor" id="overview"></span>
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">01 · What it is</p>
+      <h2>A small engine that closes a real gap in AAP credential hygiene.</h2>
+      <p class="lede">
+        AAP OAuth2 tokens are long-lived by default — a fresh token carries a ~1-year server-side expiry — and AAP
+        offers no built-in lease, audit, or just-in-time issuance story. Today those tokens get minted by hand and
+        pasted into automation. This engine puts Vault in front of that flow.
+      </p>
+      <div class="grid cols-3" style="margin-top:24px">
+        <div class="card" style="--ac:var(--acc-client)">
+          <span class="tag">For the caller</span>
+          <h3>Read a path, get a token</h3>
+          <p>A pipeline reads <code>aap/creds/&lt;role&gt;</code> and receives a working AAP token plus a lease. No token is stored anywhere durable; when the job ends the lease is revoked and the token disappears from AAP.</p>
+        </div>
+        <div class="card" style="--ac:var(--acc-vault)">
+          <span class="tag">For the platform team</span>
+          <h3>One control plane</h3>
+          <p>Issuance, TTLs, scope, and per-identity ownership are defined as Vault <strong>roles</strong>. Vault's audit log becomes the record of who obtained AAP access and when — and a single <code>lease revoke</code> kills it everywhere.</p>
+        </div>
+        <div class="card" style="--ac:var(--acc-aap)">
+          <span class="tag">For AAP</span>
+          <h3>Native, reversible units</h3>
+          <p>The engine creates only what AAP makes cheap and revocable: OAuth2 tokens against identities that already exist. It never mutates users, RBAC, or org structure — its blast radius on AAP is exactly "tokens it minted".</p>
+        </div>
+      </div>
+      <p style="margin-top:22px; color:var(--cds-text-helper); font-size:13.5px;">
+        There is no official AAP Go SDK, so the engine calls AAP's REST API directly with <code>net/http</code> —
+        the same approach Ansible's own <a href="https://github.com/ansible/terraform-provider-aap" target="_blank" rel="noopener">terraform-provider-aap</a> takes.
+      </p>
+    </div>
+  </section>
+
+  <!-- ===== Archetype / Why a custom engine ===== -->
+  <span class="anchor" id="archetype"></span>
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">02 · The design decision</p>
+      <h2>Why mint <em>tokens</em>, not dynamic <em>users</em>?</h2>
+      <p class="sec-intro">
+        The reflexive instinct for a dynamic-secrets engine is "create a fresh principal per lease", the way the
+        database and LDAP engines do. For AAP that's the wrong call — and it's worth refuting properly, because the
+        reasoning is what makes this engine principled rather than improvised.
+      </p>
+
+      <div class="note" style="--ac:var(--acc-tf); margin-top:18px">
+        <span class="lab">The deciding question</span>
+        <strong>What is the cheap, native, revocable "ephemeral unit" in the target system?</strong> A dynamic-secrets
+        engine should create whatever the target makes plentiful and side-effect-free to throw away — no more, no less.
+      </div>
+
+      <div class="tablewrap" style="margin-top:8px">
+        <table>
+          <thead>
+            <tr><th>Engine</th><th>Ephemeral unit it creates</th><th>Why that unit</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Database / LDAP</strong></td>
+              <td>a brand-new user per lease<br><code>CREATE USER</code> · <code>creation_ldif</code></td>
+              <td>In a SQL DB or directory a user is a cheap row/entry. Creating and dropping them is trivial and side-effect-free.</td>
+            </tr>
+            <tr>
+              <td><strong>AWS</strong></td>
+              <td>dynamic IAM user or STS token</td>
+              <td>Both are first-class, cheap, API-managed objects.</td>
+            </tr>
+            <tr>
+              <td><strong>Terraform Cloud / Enterprise</strong></td>
+              <td>an API <strong>token</strong> for an existing user / team / org</td>
+              <td>TFC identities are heavyweight platform principals with rich RBAC. The cheap, plentiful, revocable thing is the <em>token</em>, not the principal.</td>
+            </tr>
+            <tr style="background:#20262e">
+              <td><strong class="accent-aap">AAP — this engine</strong></td>
+              <td>an OAuth2 <strong>token</strong> for an existing identity</td>
+              <td>Same shape as TFC/TFE. AAP sits squarely in that row — and that is not a coincidence; they are the same kind of system.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="two-col" style="margin-top:30px">
+        <div>
+          <h3>AAP is TFC-shaped, not LDAP-shaped</h3>
+          <ul class="clean">
+            <li><strong>AAP users are heavy platform principals.</strong> Tied to the gateway's auth system, often backed by external SSO/LDAP/SAML, may consume a license seat, and are useless until granted org/team membership and object-level RBAC. Churning them per-lease is invasive in a way dropping a Postgres role never is.</li>
+            <li><strong>A fresh AAP user has zero permissions.</strong> To make a dynamic user useful you'd have to re-implement AAP's RBAC assignment inside the Vault role — encode "create user → POST role assignments → add team membership → …" as creation templates, then reliably tear it all down on revoke. That is rebuilding AAP's authorization model inside Vault config: high complexity, high blast radius if revoke half-fails.</li>
+            <li><strong>AAP already exposes the right unit.</strong> It supports many tokens per identity, programmatic creation, and programmatic deletion (<code>DELETE /tokens/{id}/</code>) — exactly the "plentiful + revocable" property that makes the token the correct dynamic unit.</li>
+            <li><strong>It matches how AAP is actually operated.</strong> Purpose-built service accounts (<code>svc-galaxy-sync</code>, <code>aap_operator</code>, …) carry the right RBAC; you issue <em>tokens</em> against them.</li>
+          </ul>
+        </div>
+        <div>
+          <div class="note" style="--ac:var(--acc-vault)">
+            <span class="lab">Litmus test</span>
+            <strong>Would creating the principal force you to also script its permissions?</strong>
+            For a DB user you write one <code>GRANT</code>. For an AAP user you'd orchestrate org/team/object RBAC across
+            several endpoints — a sign the principal is the wrong granularity to be ephemeral. The credential (token) is
+            the right one.
+          </div>
+          <div class="note" style="--ac:var(--acc-token)">
+            <span class="lab">Precedent</span>
+            HashiCorp made exactly this call for TFC/TFE: a rich-RBAC SaaS → mint tokens for existing principals, don't
+            create principals. AAP is the same archetype, so copying TFC's shape is the principled choice, not a shortcut.
+          </div>
+          <p style="font-size:13px;color:var(--cds-text-helper)">
+            Decision-framework outcome: AAP supports multiple tokens + programmatic deletion → <strong>dynamic secrets</strong>
+            (not dynamic users, not static). No existing Vault engine fits (not PKI / transit / identity) → a custom engine is justified.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== End-to-end lifecycle ===== -->
+  <span class="anchor" id="lifecycle"></span>
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">03 · How it behaves, end to end</p>
+      <h2>The full lifecycle of one dynamic token.</h2>
+      <p class="sec-intro">
+        A single read of <code>aap/creds/&lt;role&gt;</code> drives the sequence below. The unusual parts — a
+        write-ahead log <em>before</em> the mint, a read-back guard <em>after</em> it, and a credential snapshot into
+        the lease — exist to make two failure modes impossible: handing back a mis-owned token, and leaking a token
+        AAP created but Vault never leased.
+      </p>
+
+      <div class="legend">
+        <span><i style="border-color:var(--acc-id)"></i> request</span>
+        <span><i style="border-color:var(--cds-text-helper); border-top-style:dashed"></i> response</span>
+        <span><i style="border-color:var(--acc-vault)"></i> internal step (Vault storage)</span>
+        <span><i style="border-color:var(--acc-aap)"></i> guard / revoke</span>
+      </div>
+
+      <div class="figure">
+        <!-- Sequence diagram: Client / Vault aap-engine / AAP -->
+        <svg viewBox="0 0 980 690" role="img" aria-label="Sequence diagram of the mint, lease, renew and revoke lifecycle">
+          <defs>
+            <marker id="ah-id" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#78a9ff"/></marker>
+            <marker id="ah-gray" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8d8d8d"/></marker>
+            <marker id="ah-aap" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#FF8F8F"/></marker>
+            <marker id="ah-token" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#84E6AC"/></marker>
+          </defs>
+          <style>
+            .ll { stroke:#393939; stroke-width:1; }
+            .actor { fill:#262626; stroke:#393939; }
+            .atitle { font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:600; fill:#f4f4f4; }
+            .asub { font-family:'IBM Plex Mono',monospace; font-size:10.5px; fill:#8d8d8d; }
+            .msg { font-family:'IBM Plex Mono',monospace; font-size:11.5px; fill:#c6c6c6; }
+            .msgk { fill:#a6c8ff; }
+            .req { stroke:#78a9ff; stroke-width:1.6; }
+            .res { stroke:#8d8d8d; stroke-width:1.4; stroke-dasharray:5 3; }
+            .reqaap { stroke:#FF8F8F; stroke-width:1.6; }
+            .note { fill:#1d2228; stroke:#2f3a44; }
+            .notev { fill:#221f12; stroke:#5c5320; }
+            .noteg { fill:#241a1a; stroke:#5c2e2e; }
+            .ntext { font-family:'IBM Plex Mono',monospace; font-size:11px; fill:#c6c6c6; }
+            .ntextk { fill:#FFD814; }
+            .ntexta { fill:#FF8F8F; }
+            .phase { font-family:'IBM Plex Mono',monospace; font-size:10px; fill:#8d8d8d; letter-spacing:0.5px; }
+            .pline { stroke:#393939; stroke-width:1; stroke-dasharray:2 3; }
+          </style>
+
+          <!-- Actor headers -->
+          <g>
+            <rect class="actor" x="40"  y="16" width="190" height="46"/>
+            <text class="atitle" x="135" y="38" text-anchor="middle">caller</text>
+            <text class="asub"   x="135" y="53" text-anchor="middle">CI · operator · app</text>
+
+            <rect class="actor" x="350" y="16" width="270" height="46"/>
+            <text class="atitle" x="485" y="38" text-anchor="middle">Vault · aap engine</text>
+            <text class="asub"   x="485" y="53" text-anchor="middle">secret_token.go · wal.go</text>
+
+            <rect class="actor" x="740" y="16" width="200" height="46"/>
+            <text class="atitle" x="840" y="38" text-anchor="middle">AAP REST API</text>
+            <text class="asub"   x="840" y="53" text-anchor="middle">/tokens/ · gateway v1</text>
+          </g>
+
+          <!-- Lifelines -->
+          <line class="ll" x1="135" y1="62" x2="135" y2="664"/>
+          <line class="ll" x1="485" y1="62" x2="485" y2="664"/>
+          <line class="ll" x1="840" y1="62" x2="840" y2="664"/>
+
+          <!-- 1. caller -> vault : read creds -->
+          <text class="msg msgk" x="310" y="92" text-anchor="middle">GET aap/creds/&lt;role&gt;</text>
+          <line class="req" x1="135" y1="100" x2="481" y2="100" marker-end="url(#ah-id)"/>
+
+          <!-- 2. note on vault : PutWAL -->
+          <rect class="notev" x="360" y="116" width="250" height="34"/>
+          <text class="ntext ntextk" x="485" y="131" text-anchor="middle">PutWAL — record request marker</text>
+          <text class="ntext" x="485" y="144" text-anchor="middle">(token-to-be, before it exists)</text>
+
+          <!-- 3. vault -> aap : POST tokens -->
+          <text class="msg" x="663" y="178" text-anchor="middle"><tspan class="msgk">POST</tspan> …/tokens/  · auth: engine | bootstrap</text>
+          <line class="reqaap" x1="485" y1="186" x2="836" y2="186" marker-end="url(#ah-aap)"/>
+
+          <!-- 4. aap -> vault : 201 -->
+          <text class="msg" x="663" y="214" text-anchor="middle">201 { id, token, scope, expires, user }</text>
+          <line class="res" x1="840" y1="222" x2="489" y2="222" marker-end="url(#ah-gray)"/>
+
+          <!-- 5. guard note -->
+          <rect class="noteg" x="338" y="238" width="294" height="46"/>
+          <text class="ntext ntexta" x="485" y="256" text-anchor="middle">GUARD · read back owner / application</text>
+          <text class="ntext" x="485" y="270" text-anchor="middle">mismatch → DELETE token + error (never leak)</text>
+
+          <!-- 6. persist lease note -->
+          <rect class="notev" x="338" y="298" width="294" height="46"/>
+          <text class="ntext ntextk" x="485" y="316" text-anchor="middle">persist lease: snapshot cred + token_id</text>
+          <text class="ntext" x="485" y="330" text-anchor="middle">(id stored as string) · DeleteWAL</text>
+
+          <!-- 7. vault -> caller : token under lease -->
+          <text class="msg" x="310" y="362" text-anchor="middle">token + lease_id · renewable</text>
+          <line class="res" x1="485" y1="370" x2="139" y2="370" marker-end="url(#ah-token)" style="stroke:#84E6AC"/>
+
+          <!-- phase divider : lease active -->
+          <line class="pline" x1="40" y1="398" x2="940" y2="398"/>
+          <text class="phase" x="490" y="394" text-anchor="middle">— LEASE ACTIVE · AAP token unchanged —</text>
+
+          <!-- 8. renew -->
+          <text class="msg" x="310" y="426" text-anchor="middle"><tspan class="msgk">lease renew</tspan> → extend lease, same token</text>
+          <line class="req" x1="135" y1="434" x2="481" y2="434" marker-end="url(#ah-id)"/>
+          <rect class="note" x="372" y="446" width="226" height="30"/>
+          <text class="ntext" x="485" y="465" text-anchor="middle">reload role · re-apply ttl / max_ttl</text>
+
+          <!-- phase divider : teardown -->
+          <line class="pline" x1="40" y1="500" x2="940" y2="500"/>
+          <text class="phase" x="490" y="496" text-anchor="middle">— LEASE ENDS · revoke or ttl/max_ttl expiry —</text>
+
+          <!-- 9. revoke from caller / expiry -->
+          <text class="msg" x="310" y="528" text-anchor="middle"><tspan class="msgk">lease revoke</tspan> · or expiry (auto)</text>
+          <line class="req" x1="135" y1="536" x2="481" y2="536" marker-end="url(#ah-id)"/>
+
+          <!-- 10. vault -> aap delete -->
+          <text class="msg" x="663" y="566" text-anchor="middle"><tspan class="msgk">DELETE</tspan> …/tokens/{id}/</text>
+          <line class="reqaap" x1="485" y1="574" x2="836" y2="574" marker-end="url(#ah-aap)"/>
+
+          <!-- 11. aap -> vault 204 -->
+          <text class="msg" x="663" y="602" text-anchor="middle">204 · or 404 = already gone = success</text>
+          <line class="res" x1="840" y1="610" x2="489" y2="610" marker-end="url(#ah-gray)"/>
+
+          <!-- orphan recovery inset -->
+          <rect class="noteg" x="338" y="630" width="294" height="44"/>
+          <text class="ntext ntexta" x="485" y="648" text-anchor="middle">crash after 201, before lease stored?</text>
+          <text class="ntext" x="485" y="662" text-anchor="middle">walRollback (≥5m) revokes the orphan</text>
+        </svg>
+      </div>
+      <p class="figcap">Figure 1 — one <code>creds/</code> read, from request to revocation. The WAL brackets the mint; the guard brackets the response.</p>
+
+      <div class="grid cols-3" style="margin-top:18px">
+        <div class="card" style="--ac:var(--acc-vault)">
+          <span class="num">before the mint</span>
+          <h3>Write-ahead log</h3>
+          <p>The token's request marker is recorded in a Vault WAL <em>before</em> calling AAP. If the process dies mid-flight, the periodic rollback finds and revokes whatever AAP created.</p>
+        </div>
+        <div class="card" style="--ac:var(--acc-aap)">
+          <span class="num">after the mint</span>
+          <h3>Read-back guard</h3>
+          <p>For per-user and application-scoped roles the engine re-reads the new token's owner / binding and <strong>revokes + errors on any mismatch</strong> — a mis-owned secret can never reach the caller.</p>
+        </div>
+        <div class="card" style="--ac:var(--acc-token)">
+          <span class="num">at lease time</span>
+          <h3>Snapshot into the lease</h3>
+          <p>The token id (as a string) and the AAP connection are snapshotted into the lease's internal data, so revocation works even after <code>config</code> is later changed or deleted.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Architecture ===== -->
+  <span class="anchor" id="architecture"></span>
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">04 · Architecture</p>
+      <h2>Three actors, one privileged credential, two storage realms.</h2>
+      <p class="sec-intro">
+        The engine is a thin, stateless-by-design translator between Vault's lease machinery and AAP's token API.
+        The one subtlety worth a reviewer's attention is <em>where the privileged credential lives</em> — and why some
+        copies of it cannot be seal-wrapped.
+      </p>
+
+      <div class="figure" style="margin-top:14px">
+        <svg viewBox="0 0 980 440" role="img" aria-label="Architecture topology: caller, Vault with the AAP engine, and the AAP platform">
+          <style>
+            .box { fill:#1d1d1d; stroke:#393939; }
+            .boxh { fill:#262626; stroke:#393939; }
+            .lab { font-family:'IBM Plex Sans',sans-serif; font-size:13px; fill:#f4f4f4; font-weight:600; }
+            .sub { font-family:'IBM Plex Mono',monospace; font-size:10.5px; fill:#8d8d8d; }
+            .path { font-family:'IBM Plex Mono',monospace; font-size:11px; fill:#a6c8ff; }
+            .edge { stroke:#525252; stroke-width:1.5; fill:none; }
+            .edgelbl { font-family:'IBM Plex Mono',monospace; font-size:10.5px; fill:#c6c6c6; }
+            .grouptitle { font-family:'IBM Plex Mono',monospace; font-size:10px; fill:#8d8d8d; letter-spacing:0.5px; }
+            .seal { fill:#221f12; stroke:#5c5320; }
+            .barrier { fill:#241a1a; stroke:#5c2e2e; }
+          </style>
+          <defs>
+            <marker id="a2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#78a9ff"/></marker>
+            <marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#FF8F8F"/></marker>
+          </defs>
+
+          <!-- Caller -->
+          <rect class="boxh" x="24" y="170" width="150" height="92"/>
+          <text class="lab" x="99" y="200" text-anchor="middle">Caller</text>
+          <text class="sub" x="99" y="220" text-anchor="middle">CI / operator</text>
+          <text class="sub" x="99" y="236" text-anchor="middle">Terraform / app</text>
+
+          <!-- Vault server group -->
+          <rect class="box" x="250" y="40" width="430" height="360"/>
+          <text class="grouptitle" x="266" y="62">VAULT SERVER</text>
+
+          <!-- engine sub-box -->
+          <rect class="boxh" x="270" y="78" width="280" height="196"/>
+          <text class="grouptitle" x="286" y="98" style="fill:#FFD814">aap/ SECRETS ENGINE</text>
+          <rect class="seal" x="286" y="110" width="248" height="26"/>
+          <text class="path" x="296" y="127">config</text><text class="sub" x="402" y="127">privileged cred · seal-wrapped</text>
+          <rect class="seal" x="286" y="142" width="248" height="26"/>
+          <text class="path" x="296" y="159">role/*</text><text class="sub" x="402" y="159">scope · owner · ttl · seal-wrapped</text>
+          <rect class="box" x="286" y="174" width="248" height="26"/>
+          <text class="path" x="296" y="191">creds/*</text><text class="sub" x="402" y="191">mint endpoint (read = issue)</text>
+          <rect class="seal" x="286" y="206" width="120" height="26"/>
+          <text class="path" x="296" y="223">WAL</text><text class="sub" x="348" y="223">sealed</text>
+          <rect class="box" x="412" y="206" width="122" height="26"/>
+          <text class="path" x="422" y="223" style="font-size:10px">rotate-root</text>
+
+          <text class="sub" x="296" y="252" style="fill:#c6c6c6">→ POST/DELETE /tokens/ · resolve users &amp; apps</text>
+
+          <!-- expiration manager / lease store -->
+          <rect class="barrier" x="270" y="296" width="390" height="86"/>
+          <text class="grouptitle" x="286" y="316" style="fill:#FF8F8F">CORE EXPIRATION MANAGER — barrier-encrypted only</text>
+          <rect class="box" x="286" y="326" width="358" height="44"/>
+          <text class="sub" x="300" y="344" style="fill:#c6c6c6">lease internal data — token_id (string) +</text>
+          <text class="sub" x="300" y="360" style="fill:#FF8F8F">snapshot of AAP connection incl. privileged cred</text>
+
+          <!-- AAP -->
+          <rect class="boxh" x="760" y="120" width="196" height="200"/>
+          <text class="grouptitle" x="776" y="142" style="fill:#FF8F8F">AAP PLATFORM</text>
+          <rect class="box" x="776" y="154" width="164" height="40"/>
+          <text class="path" x="786" y="172">/tokens/</text><text class="sub" x="786" y="187">create · delete</text>
+          <rect class="box" x="776" y="202" width="164" height="36"/>
+          <text class="path" x="786" y="220">/users/?username=</text>
+          <rect class="box" x="776" y="246" width="164" height="36"/>
+          <text class="path" x="786" y="264">/applications/?name=</text>
+          <text class="sub" x="858" y="304" text-anchor="middle">gateway v1 (2.5) ·</text>
+          <text class="sub" x="858" y="316" text-anchor="middle">controller v2 (2.4)</text>
+
+          <!-- edges -->
+          <path class="edge" d="M174,210 L268,180" marker-end="url(#a2)"/>
+          <text class="edgelbl" x="222" y="186" text-anchor="middle">read creds</text>
+
+          <path class="edge" d="M550,200 L758,180" marker-end="url(#a3)"/>
+          <text class="edgelbl" x="650" y="176" text-anchor="middle">mint / revoke (privileged)</text>
+
+          <path class="edge" d="M550,250 L758,234" marker-end="url(#a3)"/>
+          <text class="edgelbl" x="652" y="252" text-anchor="middle">resolve name → id</text>
+        </svg>
+      </div>
+      <p class="figcap">Figure 2 — topology. Yellow = seal-wrapped engine storage. Red = lease copies the plugin cannot seal-wrap (see "blast radius").</p>
+
+      <h3 style="margin-top:26px">Source map</h3>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>File</th><th>Responsibility</th></tr></thead>
+          <tbody>
+            <tr><td><code>backend.go</code></td><td>Factory, backend struct, path registration, client cache + invalidation.</td></tr>
+            <tr><td><code>client.go</code></td><td>HTTP client, pluggable authenticators, mint / revoke / verify, user &amp; application resolution.</td></tr>
+            <tr><td><code>path_config.go</code></td><td><code>config</code> CRUD, auth-scheme selection, connectivity verification on write.</td></tr>
+            <tr><td><code>path_rotate_root.go</code></td><td><code>config/rotate-root</code> — rotate the engine's own privileged token.</td></tr>
+            <tr><td><code>path_roles.go</code></td><td>Role CRUD / list / schema.</td></tr>
+            <tr><td><code>path_credentials.go</code></td><td><code>creds/&lt;name&gt;</code> mint + WAL wrapping.</td></tr>
+            <tr><td><code>secret_token.go</code></td><td>The dynamic secret: mint + guards, renew, revoke.</td></tr>
+            <tr><td><code>revocation_config.go</code></td><td>Lease / WAL credential-snapshot helpers.</td></tr>
+            <tr><td><code>wal.go</code></td><td>WAL record + rollback (orphan cleanup).</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Vault model ===== -->
+  <span class="anchor" id="model"></span>
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">05 · Domain mapping</p>
+      <h2>Everything is one of three Vault objects.</h2>
+      <p class="sec-intro">The engine's whole surface area maps onto Vault's standard config / role / creds triad — nothing exotic for an operator to learn.</p>
+
+      <div class="grid cols-3" style="margin-top:22px">
+        <div class="card" style="--ac:var(--acc-vault)">
+          <span class="tag">config</span>
+          <h3>The AAP connection</h3>
+          <p><code>address</code>, one auth scheme (<code>token</code> <em>or</em> <code>username</code>+<code>password</code>), <code>tokens_api_path</code>, TLS trust, <code>request_timeout</code>, description prefix, and automated-rotation fields. Writing it <strong>verifies connectivity</strong> before persisting.</p>
+        </div>
+        <div class="card" style="--ac:var(--acc-id)">
+          <span class="tag">role/&lt;name&gt;</span>
+          <h3>The issuance policy</h3>
+          <p><code>scope</code> (<code>read</code>|<code>write</code>, default <code>read</code>), <code>description</code>, optional <code>username</code>+<code>bootstrap_token</code> for per-user ownership, optional <code>application</code> binding, and <code>ttl</code>/<code>max_ttl</code>.</p>
+        </div>
+        <div class="card" style="--ac:var(--acc-token)">
+          <span class="tag">creds/&lt;name&gt;</span>
+          <h3>The leased token</h3>
+          <p>A read mints a fresh AAP token under that role and returns <code>token</code>, <code>token_id</code>, <code>scope</code>, and <code>expires</code> beneath a renewable Vault lease.</p>
+        </div>
+      </div>
+
+      <div class="two-col" style="margin-top:30px">
+        <div>
+          <h3>Configure &amp; define a role</h3>
+          <div class="code"><span class="c"># Point the engine at AAP (bearer is recommended)</span>
+<span class="k">vault write</span> aap/config \
+  <span class="f">address</span>=<span class="s">"https://aap.example.com"</span> \
+  <span class="f">token</span>=<span class="s">"&lt;privileged AAP token&gt;"</span> \
+  <span class="f">tokens_api_path</span>=<span class="s">"/api/gateway/v1"</span>
+
+<span class="c"># An issuance policy: read-scope, 1h lease, 8h ceiling</span>
+<span class="k">vault write</span> aap/role/ci \
+  <span class="f">scope</span>=<span class="s">read</span> <span class="f">description</span>=<span class="s">"vault-ci"</span> \
+  <span class="f">ttl</span>=<span class="s">1h</span> <span class="f">max_ttl</span>=<span class="s">8h</span></div>
+        </div>
+        <div>
+          <h3>Mint, renew, revoke</h3>
+          <div class="code"><span class="c"># Mint — returns a token under a renewable lease</span>
+<span class="k">vault read</span> aap/creds/ci
+<span class="c"># key        value</span>
+<span class="c"># lease_id   aap/creds/ci/&lt;id&gt;</span>
+<span class="c"># token      &lt;the AAP OAuth2 token&gt;</span>
+<span class="c"># token_id   31</span>
+<span class="c"># scope      read</span>
+
+<span class="c"># Extend the lease — same AAP token, no re-mint</span>
+<span class="k">vault lease renew</span> aap/creds/ci/&lt;id&gt;
+
+<span class="c"># Revoke early — also DELETEs the token in AAP</span>
+<span class="k">vault lease revoke</span> aap/creds/ci/&lt;id&gt;</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== The hard parts ===== -->
+  <span class="anchor" id="hardparts"></span>
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">06 · Engineering depth</p>
+      <h2>The parts a secrets-engine reviewer will scrutinise.</h2>
+      <p class="sec-intro">These are the decisions where a token engine is easy to get subtly wrong. Each is a deliberate choice with a stated failure mode it closes.</p>
+
+      <div class="grid cols-2" style="margin-top:22px">
+        <div class="card" style="--ac:var(--acc-aap)">
+          <span class="tag">mint → read back → revoke-on-mismatch</span>
+          <h3>The guard pattern</h3>
+          <p>Per-user and application-scoped roles can't trust AAP to honour a requested field. So after minting, the engine re-reads the token's actual owner / application and, on any mismatch, <strong>revokes the token and errors</strong>. The bad outcome — a secret with the wrong identity or binding — is made <em>impossible</em>, so the feature is safe even against an AAP version that silently ignores the field.</p>
+        </div>
+        <div class="card" style="--ac:var(--acc-id)">
+          <span class="tag">bootstrap_token + username</span>
+          <h3>Per-user issuance on the 2.5 gateway</h3>
+          <p>AAP assigns a minted token's owner to whoever <em>authenticates</em> the call — the <code>user</code> field is silently ignored, and there's no admin "mint-for-user" path. So to issue a token owned by <code>svc-deploy</code>, the role carries that account's own token as <code>bootstrap_token</code> and the engine authenticates <em>as them</em>. <code>username</code> is the guard that proves it worked. No user passwords stored; bootstrap tokens are seal-wrapped and never returned.</p>
+        </div>
+        <div class="card" style="--ac:var(--acc-vault)">
+          <span class="tag">WAL · min-age 5m</span>
+          <h3>No orphaned tokens</h3>
+          <p>Minting is bracketed by a write-ahead log: the request marker is recorded before the AAP call and deleted on success. If Vault fails after AAP creates the token but before the lease is durable, <code>walRollback</code> revokes the orphan. One sub-second window (crash between <code>CreateToken</code> returning and <code>PutWAL</code>) is irreducible — AAP has no reserve-then-commit API — and is documented rather than hidden.</p>
+        </div>
+        <div class="card" style="--ac:var(--acc-aap)">
+          <span class="tag">honest tradeoff</span>
+          <h3>Revocation snapshot &amp; blast radius</h3>
+          <p>So a token can always be revoked even after <code>config</code> changes, the engine snapshots the AAP connection — <strong>including the privileged credential</strong> — into each lease. Engine storage (<code>config</code>, <code>role/*</code>, WAL) is seal-wrapped, but these lease copies live in core's expiration-manager storage, which a plugin <em>cannot</em> seal-wrap (barrier-encrypted only). Stated plainly: treat the privileged credential as present wherever active leases are, and rotate it through <code>rotate-root</code>, never out of band.</p>
+        </div>
+        <div class="card" style="--ac:var(--acc-token)">
+          <span class="tag">idempotent · precise</span>
+          <h3>Revocation that converges</h3>
+          <p>Revoke reads <code>token_id</code> from the lease and <code>DELETE</code>s it; a <code>404</code> counts as success, so Vault's retries converge. The id is stored as a <strong>string</strong> so it survives the lease's JSON round-trip exactly — a numeric id would decode back as <code>float64</code> and lose precision above 2<sup>53</sup>. Revocation also falls back to the current config credential if the snapshot was itself rotated away.</p>
+        </div>
+        <div class="card" style="--ac:var(--cds-blue-40)">
+          <span class="tag">strategy A · renewable</span>
+          <h3>Leases are the binding clock</h3>
+          <p>AAP has no extend-expiry API, but its tokens default to a ~1-year expiry — comfortably longer than any sane <code>max_ttl</code> — so renewing the <em>lease</em> (same token) is sufficient, matching every first-party Vault engine. Earlier research proposed non-renewable leases; the live 1-year finding removed the drift risk that motivated it. <code>rotate-root</code> rotates the engine's own privileged token in place, serialized so overlapping calls can't strand bookkeeping.</p>
+        </div>
+      </div>
+
+      <div class="note" style="--ac:var(--acc-aap); margin-top:24px">
+        <span class="lab">One principle behind both guards</span>
+        <strong>Mint → read back → revoke-and-error on mismatch.</strong> The failure mode (a mis-owned or mis-scoped secret)
+        is made impossible rather than merely unlikely — which is what lets per-user and application binding be safe even
+        on an AAP version that ignores the requested field.
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== API reference ===== -->
+  <span class="anchor" id="api"></span>
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">07 · API reference</p>
+      <h2>Paths &amp; fields.</h2>
+
+      <h3 style="margin-top:10px">Paths</h3>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Path</th><th>Ops</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>aap/config</code></td><td>write · read · delete</td><td>AAP connection. Credential is write-only; read reports <code>auth_type</code> and <code>token_set</code>/<code>password_set</code> only.</td></tr>
+            <tr><td><code>aap/config/rotate-root</code></td><td>write</td><td>Rotate the engine's own privileged AAP token (bearer only).</td></tr>
+            <tr><td><code>aap/role/&lt;name&gt;</code></td><td>write · read · delete</td><td>Issuance policy: scope, description, ownership, TTLs.</td></tr>
+            <tr><td><code>aap/role</code></td><td>list</td><td>List role names (sorted).</td></tr>
+            <tr><td><code>aap/creds/&lt;name&gt;</code></td><td>read</td><td>Mint a leased AAP token.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="two-col" style="margin-top:28px">
+        <div>
+          <h3>Key <code>config</code> fields</h3>
+          <div class="tablewrap">
+            <table style="min-width:0">
+              <thead><tr><th>Field</th><th>Default</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr><td><code>address</code></td><td>—</td><td>AAP base URL, no API path. <strong>Required.</strong></td></tr>
+                <tr><td><code>token</code></td><td>—</td><td>Privileged bearer token (write-only). Recommended scheme.</td></tr>
+                <tr><td><code>username</code>/<code>password</code></td><td>—</td><td>Basic-auth alternative (write-only password).</td></tr>
+                <tr><td><code>tokens_api_path</code></td><td><code>/api/gateway/v1</code></td><td><code>…/gateway/v1</code> (2.5) or <code>…/controller/v2</code> (2.4).</td></tr>
+                <tr><td><code>ca_cert</code></td><td>—</td><td>PEM CA to trust for the AAP endpoint.</td></tr>
+                <tr><td><code>skip_tls_verify</code></td><td><code>false</code></td><td><span class="warn">Insecure</span> — lab only; prefer <code>ca_cert</code>.</td></tr>
+                <tr><td><code>request_timeout</code></td><td><code>30s</code></td><td>Per-request timeout for AAP calls.</td></tr>
+                <tr><td><code>token_description_prefix</code></td><td>—</td><td>Prefix on minted descriptions; engine also appends a unique request marker.</td></tr>
+                <tr><td><code>rotation_period</code> / <code>rotation_schedule</code></td><td>—</td><td>Automated root rotation (Enterprise Rotation Manager).</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <h3>Key <code>role</code> fields</h3>
+          <div class="tablewrap">
+            <table style="min-width:0">
+              <thead><tr><th>Field</th><th>Default</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr><td><code>scope</code></td><td><code>read</code></td><td><code>read</code> or <code>write</code>; set <code>write</code> only when mutation is needed.</td></tr>
+                <tr><td><code>description</code></td><td>—</td><td>Base description on minted tokens (before the request marker).</td></tr>
+                <tr><td><code>username</code></td><td>—</td><td>Ownership guard; the minted token <em>must</em> belong to this user. Requires <code>bootstrap_token</code>.</td></tr>
+                <tr><td><code>bootstrap_token</code></td><td>—</td><td>That user's own token, so tokens are minted <em>as</em> them (write-only, seal-wrapped).</td></tr>
+                <tr><td><code>application</code></td><td>—</td><td>AAP OAuth2 application to bind tokens to (verified after mint).</td></tr>
+                <tr><td><code>ttl</code> / <code>max_ttl</code></td><td>mount</td><td>Lease TTL and ceiling for minted tokens.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="note" style="--ac:var(--acc-id); margin-top:16px">
+            <span class="lab">Three role shapes</span>
+            <strong>Plain</strong> (engine identity) · <strong>per-user</strong> (<code>username</code>+<code>bootstrap_token</code>) ·
+            <strong>application-scoped</strong> (<code>application</code>). The last two compose.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Verified behaviour ===== -->
+  <span class="anchor" id="verified"></span>
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">08 · Verified behaviour</p>
+      <h2>What was confirmed against a live AAP.</h2>
+      <p class="sec-intro">
+        The token model isn't inferred from docs — it was probed against a live <strong>AAP 2.5 gateway (4.8.0)</strong>.
+        These observations are what drive the design (per-user via bootstrap token; gateway base path; idempotent revoke).
+      </p>
+
+      <div class="tablewrap" style="margin-top:8px">
+        <table>
+          <thead><tr><th>Operation</th><th>Request</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Mint</strong></td><td><code>POST /api/gateway/v1/tokens/</code> <code>{scope, description[, application]}</code></td><td><span class="ok">201</span> → <code>{id, token, scope, expires, user, application}</code></td></tr>
+            <tr><td><strong>Revoke</strong></td><td><code>DELETE /api/gateway/v1/tokens/{id}/</code></td><td><span class="ok">204</span></td></tr>
+            <tr><td><strong>Read after revoke</strong></td><td><code>GET …/tokens/{id}/</code></td><td><span class="ok">404</span> — treated as revoked (idempotent)</td></tr>
+            <tr><td><strong>No / bad auth</strong></td><td>any</td><td><span class="err">401</span></td></tr>
+            <tr><td><strong>Resolve user</strong></td><td><code>GET …/users/?username=&lt;n&gt;</code></td><td><span class="ok">200</span> → <code>{count, results:[{id, username}]}</code></td></tr>
+            <tr><td><strong>Resolve application</strong></td><td><code>GET …/applications/?name=&lt;n&gt;</code></td><td><span class="ok">200</span> → <code>{count, results:[{id, name}]}</code></td></tr>
+            <tr><td><strong>Owner field on mint</strong></td><td><code>POST …/tokens/</code> with <code>user</code></td><td><span class="warn">silently ignored</span> on 2.5 gateway → drives the bootstrap-token design</td></tr>
+            <tr><td><strong>Controller token path</strong></td><td><code>…/controller/v2/tokens/</code> on 2.5</td><td><span class="err">404</span> — token mgmt moved to the gateway</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="two-col" style="margin-top:26px">
+        <div class="note" style="--ac:var(--acc-token)">
+          <span class="lab">Test coverage</span>
+          Unit tests run against an in-process mock AAP (no network): config CRUD, role schema, guard mismatch,
+          WAL replay / crash recovery, lease renew &amp; revoke branches. Acceptance tests
+          (<code>TestAcceptance_PerUserMintLiveAAP</code>, <code>TestCredentials_AppScopedMint</code>) mint and revoke
+          real tokens against a live AAP when <code>VAULT_ACC</code> is set.
+        </div>
+        <div class="note" style="--ac:var(--acc-vault)">
+          <span class="lab">Status</span>
+          Verified end-to-end against AAP 4.8.0: unit + acceptance tests pass, <code>golangci-lint</code> clean, and the
+          built plugin mints / renews / revokes real AAP tokens through a dev Vault — revoke confirmed to <code>404</code>
+          the token in AAP.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Footer ===== -->
+  <footer>
+    <div class="wrap">
+      <div>
+        <h4>vault-plugin-secrets-aap</h4>
+        <p class="mono">Dynamic AAP OAuth2 tokens · MPL-2.0 · built on the Vault plugin SDK</p>
+      </div>
+      <div class="mono">
+        <a href="https://github.com/hashi-demo-lab/vault-plugin-secrets-aap" target="_blank" rel="noopener">repo ↗</a>
+        &nbsp;·&nbsp; <a href="https://github.com/hashi-demo-lab/vault-plugin-secrets-aap/blob/main/ARCHITECTURE.md" target="_blank" rel="noopener">ARCHITECTURE.md ↗</a>
+        &nbsp;·&nbsp; <a href="#top">back to top</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Scroll-spy: highlight the active section in the sticky nav.
+    (function () {
+      var links = Array.prototype.slice.call(document.querySelectorAll('.secnav a'));
+      var map = {};
+      links.forEach(function (l) { map[l.getAttribute('href').slice(1)] = l; });
+      var ids = Object.keys(map);
+      var obs = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) {
+            links.forEach(function (l) { l.classList.remove('active'); });
+            var id = e.target.getAttribute('id');
+            if (map[id]) map[id].classList.add('active');
+          }
+        });
+      }, { rootMargin: '-110px 0px -70% 0px', threshold: 0 });
+      ids.forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) obs.observe(el);
+      });
+    })();
+  </script>
+</body>
+</html>
