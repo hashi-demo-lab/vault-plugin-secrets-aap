@@ -14,23 +14,32 @@ import (
 )
 
 func main() {
-	apiClientMeta := &api.PluginAPIClientMeta{}
-	flags := apiClientMeta.FlagSet()
-	if err := flags.Parse(os.Args[1:]); err != nil {
-		logger := hclog.New(&hclog.LoggerOptions{})
+	logger := hclog.New(&hclog.LoggerOptions{})
+
+	opts, err := serveOpts(os.Args[1:])
+	if err != nil {
 		logger.Error("failed to parse plugin flags", "error", err)
 		os.Exit(1)
 	}
 
-	tlsConfig := apiClientMeta.GetTLSConfig()
-	tlsProviderFunc := api.VaultPluginTLSProvider(tlsConfig)
-
-	if err := plugin.ServeMultiplex(&plugin.ServeOpts{
-		BackendFactoryFunc: aap.Factory,
-		TLSProviderFunc:    tlsProviderFunc,
-	}); err != nil {
-		logger := hclog.New(&hclog.LoggerOptions{})
+	if err := plugin.ServeMultiplex(opts); err != nil {
 		logger.Error("plugin shutting down", "error", err)
 		os.Exit(1)
 	}
+}
+
+// serveOpts parses the plugin API client flags and builds the ServeOpts that
+// wire this plugin's Factory and TLS provider. Extracted from main so the wiring
+// is unit-testable without actually serving over gRPC.
+func serveOpts(args []string) (*plugin.ServeOpts, error) {
+	apiClientMeta := &api.PluginAPIClientMeta{}
+	flags := apiClientMeta.FlagSet()
+	if err := flags.Parse(args); err != nil {
+		return nil, err
+	}
+
+	return &plugin.ServeOpts{
+		BackendFactoryFunc: aap.Factory,
+		TLSProviderFunc:    api.VaultPluginTLSProvider(apiClientMeta.GetTLSConfig()),
+	}, nil
 }

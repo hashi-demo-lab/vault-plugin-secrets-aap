@@ -3,7 +3,11 @@ PLUGIN_DIR  := vault/plugins
 BIN         := $(PLUGIN_DIR)/$(PLUGIN_NAME)
 GOBIN       := $(shell go env GOPATH)/bin
 
-.PHONY: all build test testacc lint fmt vet tidy clean enable dev
+.PHONY: all build test testacc lint fmt vet tidy clean enable dev snapshot
+
+# Local release dry-run (no publish). Requires goreleaser; produces dist/.
+snapshot:
+	goreleaser release --snapshot --clean
 
 all: fmt vet lint test build
 
