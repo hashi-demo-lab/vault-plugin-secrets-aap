@@ -1,0 +1,48 @@
+version: 2
+
+project_name: vault-plugin-secrets-aap
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: vault-plugin-secrets-aap
+    main: ./cmd/vault-plugin-secrets-aap
+    binary: vault-plugin-secrets-aap
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    formats: ["zip"]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  # SHA256SUMS is what `vault plugin register -sha256=` consumes.
+  name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
+  algorithm: sha256
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto
