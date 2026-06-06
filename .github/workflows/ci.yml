@@ -55,9 +55,11 @@ jobs:
 
       - name: Install Vault
         run: |
-          curl -fsSLo vault.zip "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
-          unzip -q vault.zip
-          sudo install vault /usr/local/bin/vault
+          # Extract to a temp dir: the repo has a vault/ directory, which would
+          # collide with the unzipped `vault` binary in the workspace root.
+          curl -fsSLo /tmp/vault.zip "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -o -q /tmp/vault.zip -d /tmp/vaultbin
+          sudo install /tmp/vaultbin/vault /usr/local/bin/vault
           vault version
 
       - name: Vault dev smoke
