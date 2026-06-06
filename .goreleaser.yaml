@@ -46,3 +46,4 @@ changelog:
 release:
   draft: false
   prerelease: auto
+  target_commitish: "{{ .Commit }}"

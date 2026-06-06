@@ -85,16 +85,18 @@ Provide **one** auth scheme: a bearer `token`, or basic `username`+`password`.
 The auth scheme is pluggable behind an internal `authenticator` interface (bearer and
 basic today); `vault read aap/config` reports `auth_type`. Bearer is recommended — a
 token is revocable and scoped, whereas a password is not. Per-user `bootstrap_token`s
-are always bearer regardless of the engine's own scheme.
+are always bearer regardless of the engine's own scheme. Updating `config` with a bearer
+`token` clears any stored basic credentials; updating it with `username`+`password` clears
+any stored bearer token and root-rotation token id.
 
 ### Role fields
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `scope` | `read` | `read` or `write` (defaults to least-privilege `read`) |
+| `scope` | `write` | `read` or `write`; set `read` explicitly for least privilege |
 | `description` | — | description applied to minted AAP tokens |
-| `username` | — | optional AAP user the minted token must be owned by (ownership guard; see below) |
-| `bootstrap_token` | — | optional: that user's own AAP token, so tokens are minted *as* them (write-only) |
+| `username` | — | optional AAP user the minted token must be owned by; requires `bootstrap_token` |
+| `bootstrap_token` | — | that user's own AAP token, so tokens are minted *as* them (write-only) |
 | `application` | — | optional AAP OAuth2 application name to bind minted tokens to |
 | `ttl` | mount default | lease TTL for minted tokens |
 | `max_ttl` | mount default | maximum lease TTL |
@@ -129,8 +131,8 @@ How it works and why it's safe:
   shows `bootstrap_token_set: true`).
 - **`username`** is an ownership **guard**: after minting, the engine reads the new token's
   owner and, if it is not this user, **revokes the token and errors** — so a misconfigured
-  `bootstrap_token` (or a role that names a user but supplies no bootstrap token) can never hand
-  back a token carrying the wrong identity.
+  `bootstrap_token` can never hand back a token carrying the wrong identity. Role writes that set
+  `username` without `bootstrap_token` are rejected up front.
 - Revocation is unchanged — token IDs are global, revoked with the engine's config token.
 
 Why a bootstrap token and not the `user` field or a password grant? On the **AAP 2.5 gateway**
@@ -149,7 +151,8 @@ vault write -f aap/config/rotate-root
 ```
 
 Mints a fresh AAP token for the configured identity, verifies it, swaps it into `config`, and
-revokes the previous **engine-minted** token. The first rotation can't revoke the original
+revokes the previous **engine-minted** token. Rotations are serialized in-process so overlapping
+requests cannot leave an intermediate privileged token untracked. The first rotation can't revoke the original
 operator-supplied token (its id is unknown to the engine) and warns you to revoke it manually;
 subsequent rotations revoke the prior token automatically. Outstanding leases still revoke
 correctly afterward — revocation falls back to the current (rotated) credential if the lease's
@@ -213,7 +216,8 @@ is set. **Never commit `.env` or real tokens** — `.gitignore` blocks them.
 
 ## Examples
 
-A runnable Terraform example (mount + config + role + dynamic read) lives in
+A runnable Terraform example (mount + config + role; dynamic reads happen outside Terraform to
+avoid storing live tokens in state) lives in
 [`examples/terraform/`](./examples/terraform/).
 
 ## Troubleshooting

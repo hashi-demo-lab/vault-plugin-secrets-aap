@@ -72,11 +72,11 @@ func TestCredentials_PerUserMint(t *testing.T) {
 }
 
 // TestCredentials_PerUserMint_OwnershipGuard covers the guard firing: a role names
-// a user but supplies no bootstrap_token, so the token is minted as the engine
-// identity (id 2), not the requested user (id 7). The engine must detect the
-// mismatch, revoke the misattributed token, and fail loudly.
+// one user but supplies a bootstrap_token for another user. The engine must
+// detect the mismatch, revoke the misattributed token, and fail loudly.
 func TestCredentials_PerUserMint_OwnershipGuard(t *testing.T) {
 	m := newMockAAP("admin-token")
+	m.addIdentity("svc-readonly-token", 8)
 	srv := m.server(t)
 	defer srv.Close()
 
@@ -85,7 +85,9 @@ func TestCredentials_PerUserMint_OwnershipGuard(t *testing.T) {
 
 	testConfigCreate(t, b, s, srv.URL, "admin-token")
 	testRoleCreate(t, b, s, "deploy", map[string]interface{}{
-		"scope": "read", "username": "svc-deploy", // id 7, but no bootstrap_token
+		"scope":           "read",
+		"username":        "svc-deploy", // id 7
+		"bootstrap_token": "svc-readonly-token",
 	})
 
 	_, err := b.HandleRequest(ctx, &logical.Request{
@@ -93,14 +95,39 @@ func TestCredentials_PerUserMint_OwnershipGuard(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not \"svc-deploy\"")
-	require.Contains(t, err.Error(), "bootstrap_token")
 	require.Equal(t, 0, m.liveCount(), "the misattributed token must be revoked, not leaked")
+}
+
+func TestCredentials_PerUserMint_OwnershipGuardReportsRevokeFailure(t *testing.T) {
+	m := newMockAAP("admin-token")
+	m.addIdentity("svc-readonly-token", 8)
+	m.failRevoke = true
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	testRoleCreate(t, b, s, "deploy", map[string]interface{}{
+		"scope":           "read",
+		"username":        "svc-deploy",
+		"bootstrap_token": "svc-readonly-token",
+	})
+
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/deploy", Storage: s,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to revoke minted token")
+	require.Equal(t, 1, m.liveCount(), "the cleanup failure should be visible because the token remains live")
 }
 
 // TestCredentials_PerUserMint_UnknownUser surfaces a clear error when the role's
 // username does not resolve, and mints nothing.
 func TestCredentials_PerUserMint_UnknownUser(t *testing.T) {
 	m := newMockAAP("admin-token")
+	m.addIdentity("ghost-token", 9)
 	srv := m.server(t)
 	defer srv.Close()
 
@@ -109,8 +136,9 @@ func TestCredentials_PerUserMint_UnknownUser(t *testing.T) {
 
 	testConfigCreate(t, b, s, srv.URL, "admin-token")
 	testRoleCreate(t, b, s, "ghost", map[string]interface{}{
-		"scope":    "read",
-		"username": "does-not-exist",
+		"scope":           "read",
+		"username":        "does-not-exist",
+		"bootstrap_token": "ghost-token",
 	})
 
 	_, err := b.HandleRequest(ctx, &logical.Request{

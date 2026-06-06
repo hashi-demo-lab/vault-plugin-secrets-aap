@@ -39,6 +39,9 @@ func (b *aapBackend) pathRotateRoot() *framework.Path {
 // engine-minted token. Only supported for bearer-token auth — basic-auth
 // rotation would mean changing a password, a different operation.
 func (b *aapBackend) pathRotateRootWrite(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+	b.configLock.Lock()
+	defer b.configLock.Unlock()
+
 	config, err := getConfig(ctx, req.Storage)
 	if err != nil {
 		return nil, err
@@ -67,24 +70,22 @@ func (b *aapBackend) pathRotateRootWrite(ctx context.Context, req *logical.Reque
 	newConfig.TokenID = newToken.ID
 	newClientForVerify, err := newClient(newConfig)
 	if err != nil {
-		_ = client.RevokeToken(ctx, newToken.ID)
-		return nil, fmt.Errorf("rotate-root: building client for new token failed: %w", err)
+		return nil, cleanupNewRootToken(ctx, client, newToken.ID,
+			fmt.Errorf("rotate-root: building client for new token failed: %w", err))
 	}
 	if err := newClientForVerify.VerifyToken(ctx); err != nil {
-		_ = client.RevokeToken(ctx, newToken.ID)
-		return nil, fmt.Errorf("rotate-root: new token failed verification, keeping old token: %w", err)
+		return nil, cleanupNewRootToken(ctx, client, newToken.ID,
+			fmt.Errorf("rotate-root: new token failed verification, keeping old token: %w", err))
 	}
 
 	// Commit the new token.
 	oldTokenID := config.TokenID
 	entry, err := logical.StorageEntryJSON(configStoragePath, newConfig)
 	if err != nil {
-		_ = client.RevokeToken(ctx, newToken.ID)
-		return nil, err
+		return nil, cleanupNewRootToken(ctx, client, newToken.ID, err)
 	}
 	if err := req.Storage.Put(ctx, entry); err != nil {
-		_ = client.RevokeToken(ctx, newToken.ID)
-		return nil, err
+		return nil, cleanupNewRootToken(ctx, client, newToken.ID, err)
 	}
 	b.reset()
 
@@ -95,11 +96,23 @@ func (b *aapBackend) pathRotateRootWrite(ctx context.Context, req *logical.Reque
 	// the current config on an auth failure (see revocationClient usage).
 	resp := &logical.Response{}
 	if oldTokenID > 0 {
-		if err := newClientForVerify.RevokeToken(ctx, oldTokenID); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHTTPTimeout)
+		defer cancel()
+		if err := newClientForVerify.RevokeToken(cleanupCtx, oldTokenID); err != nil {
 			resp.AddWarning(fmt.Sprintf("rotated root token, but revoking the previous token (id %d) failed: %s", oldTokenID, err))
 		}
 	} else {
 		resp.AddWarning("rotated root token; the previous token's id is unknown (it was operator-supplied), so it was not revoked — revoke it in AAP manually")
 	}
 	return resp, nil
+}
+
+func cleanupNewRootToken(ctx context.Context, client *aapClient, id int64, cause error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHTTPTimeout)
+	defer cancel()
+
+	if err := client.RevokeToken(cleanupCtx, id); err != nil {
+		return fmt.Errorf("%w; additionally failed to revoke newly minted root token %d: %v", cause, id, err)
+	}
+	return cause
 }

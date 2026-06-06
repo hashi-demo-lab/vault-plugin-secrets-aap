@@ -94,13 +94,28 @@ func TestRole_TTLCannotExceedMaxTTL(t *testing.T) {
 	require.Contains(t, resp.Error().Error(), "cannot exceed max_ttl")
 }
 
-func TestRole_DefaultScopeIsRead(t *testing.T) {
+func TestRole_DefaultScopeIsWrite(t *testing.T) {
 	b, s := getTestBackend(t)
 	testRoleCreate(t, b, s, "defaulted", map[string]interface{}{})
 
 	role, err := b.getRole(context.Background(), s, "defaulted")
 	require.NoError(t, err)
-	require.Equal(t, "read", role.Scope, "default scope should be least-privilege 'read'")
+	require.Equal(t, "write", role.Scope, "default scope should stay backward-compatible")
+}
+
+func TestRole_UsernameRequiresBootstrapToken(t *testing.T) {
+	b, s := getTestBackend(t)
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.CreateOperation, Path: "role/deploy", Storage: s,
+		Data: map[string]interface{}{
+			"scope":    "read",
+			"username": "svc-deploy",
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.IsError())
+	require.Contains(t, resp.Error().Error(), "bootstrap_token")
 }
 
 func TestRole_UsernamePersistedAndReturned(t *testing.T) {

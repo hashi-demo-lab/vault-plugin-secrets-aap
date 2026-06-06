@@ -3,7 +3,7 @@ PLUGIN_DIR  := vault/plugins
 BIN         := $(PLUGIN_DIR)/$(PLUGIN_NAME)
 GOBIN       := $(shell go env GOPATH)/bin
 
-.PHONY: all build test testacc lint fmt vet tidy clean enable dev snapshot
+.PHONY: all build test testacc lint fmt vet tidy clean enable dev snapshot vault-smoke
 
 # Local release dry-run (no publish). Requires goreleaser; produces dist/.
 snapshot:
@@ -23,6 +23,9 @@ test:
 #   set -a && . ./.env && set +a && make testacc
 testacc:
 	VAULT_ACC=1 go test -v -count=1 -run TestAcceptance ./...
+
+vault-smoke: build
+	./scripts/vault-dev-smoke.sh
 
 lint:
 	golangci-lint run ./...

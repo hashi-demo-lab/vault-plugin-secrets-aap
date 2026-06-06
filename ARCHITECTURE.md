@@ -53,7 +53,7 @@ drive the design:
 | Vault concept | Purpose | Fields |
 |---------------|---------|--------|
 | **Config** (`config`) | AAP connection | `address`, auth: `token` **or** `username`+`password` (sensitive), `tokens_api_path`, `ca_cert`, `skip_tls_verify`; internal `token_id` (rotate-root) |
-| **Role** (`role/<name>`) | Issuance policy | `scope` (read\|write, default `read`), `description`, `username` (owner guard), `bootstrap_token` (sensitive), `application`, `ttl`, `max_ttl` |
+| **Role** (`role/<name>`) | Issuance policy | `scope` (read\|write, default `write`), `description`, `username` (owner guard, requires `bootstrap_token`), `bootstrap_token` (sensitive), `application`, `ttl`, `max_ttl` |
 | **Credentials** (`creds/<name>`) | Mint a leased token | returns `token`, `token_id`, `scope`, `expires` |
 
 ## Vault API
@@ -87,7 +87,9 @@ POST aap/config { "address": "...", "username": "svc-admin", "password": "..." }
 
 Writing `config` **verifies connectivity** (an authenticated probe to the tokens endpoint)
 before persisting, so a bad address/path/TLS/credential fails the write rather than the
-first `creds/` read (`pathConfigWrite` → `client.VerifyToken`).
+first `creds/` read (`pathConfigWrite` → `client.VerifyToken`). Config updates are
+replace-oriented for auth schemes: supplying a bearer token clears stored basic credentials,
+and supplying username/password clears the bearer token and any rotate-root `token_id`.
 
 ### Roles
 
@@ -126,9 +128,9 @@ builds a mint client authenticating as it (bearer), so the issued token belongs 
 
 `username` is an **ownership guard**: after minting, the engine reads the new token's owner
 (`tokenOwner`) and, if it isn't the resolved `username` id, **revokes the token and errors**.
-This catches a misconfigured `bootstrap_token`, or a role that names a user but supplies no
-bootstrap token (which would mint as the engine identity). `bootstrap_token` is seal-wrapped
-and never returned on read (`bootstrap_token_set: true`).
+This catches a misconfigured `bootstrap_token`; role writes that set `username` without a
+`bootstrap_token` are rejected before any token can be minted as the engine identity.
+`bootstrap_token` is seal-wrapped and never returned on read (`bootstrap_token_set: true`).
 
 ## Application-scoped tokens (`application`)
 
@@ -145,9 +147,11 @@ same guard pattern as per-user. Composable with `username`/`bootstrap_token`.
 
 Mints a fresh token for the configured identity (authenticating with the current token),
 verifies it works, swaps it into `config` (recording its `token_id`), then revokes the
-previous **engine-minted** token. The first rotation can't revoke an operator-supplied token
-(its id is unknown) and warns; later rotations revoke the prior token. Bearer-only (rotating
-basic auth would mean changing a password — a different operation, rejected).
+previous **engine-minted** token. Rotation is serialized in-process so overlapping calls do
+not overwrite each other's root token bookkeeping. The first rotation can't revoke an
+operator-supplied token (its id is unknown) and warns; later rotations revoke the prior
+token. Bearer-only (rotating basic auth would mean changing a password — a different
+operation, rejected).
 
 ## Implementation Notes
 
@@ -219,7 +223,8 @@ issued, the engine also best-effort revokes immediately. One sub-second window i
   robustness — see *Revocation snapshot & blast radius*. Use `rotate-root` to rotate it.
 - Minted token secret values are returned **once** and held only under a Vault lease.
 - `skip_tls_verify=true` is insecure; production should configure `ca_cert` instead.
-- Least privilege: roles fix `scope` (default `read`); ownership/application guards prevent
+- Least privilege: roles fix `scope` (default `write` for backward compatibility; set `read`
+  explicitly for least privilege); ownership/application guards prevent
   issuing a token with the wrong identity or binding.
 - No orphaned credentials: WAL rollback revokes any token created in AAP whose lease was
   never durably stored.

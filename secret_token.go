@@ -102,12 +102,12 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 	if applicationID > 0 {
 		boundApp, verr := adminClient.tokenApplication(ctx, token.ID)
 		if verr != nil {
-			_ = adminClient.RevokeToken(ctx, token.ID)
-			return nil, nil, fmt.Errorf("could not verify application binding of minted token: %w", verr)
+			return nil, nil, revokeMintedTokenAfterVerificationFailure(ctx, adminClient, token.ID,
+				fmt.Errorf("could not verify application binding of minted token: %w", verr))
 		}
 		if boundApp != applicationID {
-			_ = adminClient.RevokeToken(ctx, token.ID)
-			return nil, nil, fmt.Errorf("token was not bound to application %q (id %d); AAP bound it to %d", role.Application, applicationID, boundApp)
+			return nil, nil, revokeMintedTokenAfterVerificationFailure(ctx, adminClient, token.ID,
+				fmt.Errorf("token was not bound to application %q (id %d); AAP bound it to %d", role.Application, applicationID, boundApp))
 		}
 	}
 
@@ -119,25 +119,35 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 	if role.Username != "" {
 		wantID, rerr := adminClient.ResolveUserID(ctx, role.Username)
 		if rerr != nil {
-			_ = adminClient.RevokeToken(ctx, token.ID)
-			return nil, nil, fmt.Errorf("error resolving AAP user %q: %w", role.Username, rerr)
+			return nil, nil, revokeMintedTokenAfterVerificationFailure(ctx, adminClient, token.ID,
+				fmt.Errorf("error resolving AAP user %q: %w", role.Username, rerr))
 		}
 		owner, verr := adminClient.tokenOwner(ctx, token.ID)
 		if verr != nil {
-			_ = adminClient.RevokeToken(ctx, token.ID)
-			return nil, nil, fmt.Errorf("could not verify owner of token minted for %q: %w", role.Username, verr)
+			return nil, nil, revokeMintedTokenAfterVerificationFailure(ctx, adminClient, token.ID,
+				fmt.Errorf("could not verify owner of token minted for %q: %w", role.Username, verr))
 		}
 		if owner != wantID {
-			_ = adminClient.RevokeToken(ctx, token.ID)
 			hint := ""
 			if role.BootstrapToken == "" {
 				hint = " (set bootstrap_token to that user's own AAP token so the token is minted as them)"
 			}
-			return nil, nil, fmt.Errorf("token was minted for user id %d, not %q (id %d)%s", owner, role.Username, wantID, hint)
+			return nil, nil, revokeMintedTokenAfterVerificationFailure(ctx, adminClient, token.ID,
+				fmt.Errorf("token was minted for user id %d, not %q (id %d)%s", owner, role.Username, wantID, hint))
 		}
 	}
 
 	return token, cloneConfig(config), nil
+}
+
+func revokeMintedTokenAfterVerificationFailure(ctx context.Context, client *aapClient, id int64, cause error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHTTPTimeout)
+	defer cancel()
+
+	if err := client.RevokeToken(cleanupCtx, id); err != nil {
+		return fmt.Errorf("%w; additionally failed to revoke minted token %d after verification failure: %v", cause, id, err)
+	}
+	return cause
 }
 
 // tokenRevoke deletes the AAP token recorded in the lease's internal data.

@@ -1,7 +1,8 @@
 # Terraform example: AAP secrets engine
 
-Configures the AAP secrets engine end to end — mount, connection config, an
-issuance role — and reads a dynamic token.
+Configures the AAP secrets engine end to end: mount, connection config, and an
+issuance role. It intentionally does **not** read a dynamic token in Terraform,
+because data source results are persisted in Terraform state.
 
 ## Prerequisites
 
@@ -20,7 +21,7 @@ terraform apply \
   -var 'aap_token=<privileged AAP token>' \
   -var 'skip_tls_verify=true'      # lab only; prefer a trusted CA in prod
 
-terraform output -raw ci_token     # the minted AAP token (sensitive)
+vault read "$(terraform output -raw ci_creds_path)" # mint at consume time
 ```
 
 ## Notes
@@ -30,8 +31,9 @@ terraform output -raw ci_token     # the minted AAP token (sensitive)
 - For **per-user issuance**, uncomment `username` + `bootstrap_token` on the role
   (and the `svc_ci_token` variable). `bootstrap_token` is that user's own AAP
   token; the minted token is then owned by that user. See the repo README.
-- `data.vault_generic_secret.ci_token` mints a **fresh leased token** on every
-  refresh/apply. For real workflows, read `aap/creds/<role>` at consume time
-  rather than storing the token in Terraform state.
+- Dynamic credentials are read outside Terraform with `vault read
+  aap/creds/<role>`. Avoid `vault_generic_secret` data sources for `creds/`
+  paths: every refresh/apply can mint a fresh leased token and Terraform stores
+  the secret value in state.
 - **AAP 2.4 controller** instead of 2.5 gateway? Set
   `-var 'tokens_api_path=/api/controller/v2'`.

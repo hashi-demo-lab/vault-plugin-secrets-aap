@@ -25,3 +25,9 @@ coverage.*
 # Terraform example artifacts
 examples/terraform/.terraform/
 examples/terraform/.terraform.lock.hcl
+examples/terraform/*.tfstate
+examples/terraform/*.tfstate.*
+examples/terraform/*.tfvars
+examples/terraform/*.tfvars.json
+examples/terraform/crash.log
+vault-dev-smoke.log

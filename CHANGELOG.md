@@ -13,8 +13,8 @@ All notable changes to this project are documented here. The format is based on
 - **Application-scoped tokens** — role `application` binds minted tokens to a named AAP
   OAuth2 application, with a post-mint **binding guard**. (#11)
 - **`config/rotate-root`** — rotate the engine's own privileged token: mint → verify → swap
-  → revoke the previous engine-minted token. Revocation falls back to current config so
-  outstanding leases survive rotation. (#9)
+  → revoke the previous engine-minted token. Rotation is serialized and cleanup failures are
+  surfaced so operators know when a newly minted privileged token may still be live. (#9)
 - **Pluggable authentication** — `authenticator` interface with **bearer** and **basic**
   (username/password) schemes; `GET config` reports `auth_type`. (#8)
 - **Config-time connectivity verification** — writing `config` probes AAP and rejects a bad
@@ -26,7 +26,12 @@ All notable changes to this project are documented here. The format is based on
 - Plugin entrypoint test coverage via an extracted `serveOpts`. (#7)
 
 ### Changed
-- Role `scope` now defaults to least-privilege **`read`** (was `write`).
+- Role `scope` remains backward-compatible at **`write`** by default; set `scope=read`
+  explicitly for least privilege.
+- `config` auth updates now replace the active auth scheme: bearer-token writes clear basic
+  credentials, and username/password writes clear bearer credentials and rotate-root token id.
+- Role writes now reject `username` without `bootstrap_token`, surfacing per-user
+  misconfiguration before the first `creds/` read.
 - `role` list output is sorted for a stable API response.
 - Revocation snapshot (lease + WAL) now carries whichever credential the config used
   (bearer or basic) so basic-auth configs can revoke after a config change.
@@ -36,6 +41,8 @@ All notable changes to this project are documented here. The format is based on
   into each lease's (core-managed, non-seal-wrapped) internal data for revocation
   robustness; rotate it via `config`/`rotate-root`, never out of band.
 - Per-role `bootstrap_token` and config `password` are write-only (never returned on read).
+- Terraform examples no longer read dynamic credentials into state; dynamic tokens are read
+  at consume time with `vault read`.
 
 ## [0.1.0] — baseline
 
