@@ -1,17 +1,21 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
+env:
+  GO_VERSION: "1.23"
+  VAULT_VERSION: "1.19.5"
+
 jobs:
-  build-test:
-    name: Build & Test
+  test:
+    name: Test and smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,13 +23,21 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Verify modules
+      - name: Check formatting
         run: |
-          go mod download
-          go mod verify
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Check modules are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
 
       - name: Vet
         run: go vet ./...
@@ -33,22 +45,27 @@ jobs:
       - name: Unit tests
         run: go test -race -cover ./...
 
-      - name: Build plugin
-        run: make build
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-          cache: true
-
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
+
+      - name: Build plugin
+        run: make build
+
+      - name: Install Vault
+        run: |
+          curl -fsSLo vault.zip "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -q vault.zip
+          sudo install vault /usr/local/bin/vault
+          vault version
+
+      - name: Vault dev smoke
+        run: make vault-smoke
+
+      - name: GoReleaser config check
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check

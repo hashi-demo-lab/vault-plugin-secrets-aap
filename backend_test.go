@@ -49,6 +49,10 @@ type mockAAP struct {
 	mintUsers  map[int64]int64  // token id -> owner id recorded at mint
 	mintApps   map[int64]int64  // token id -> application id recorded at mint
 
+	createDelay time.Duration
+	failVerify  bool
+	failRevoke  bool
+
 	// ignoreApp reproduces an AAP that drops the requested application binding
 	// (mints a personal token regardless), so the application guard can be tested.
 	ignoreApp bool
@@ -177,6 +181,10 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.Method == http.MethodGet && suffix == "":
+		if m.failVerify {
+			http.Error(w, `{"detail":"verification failed"}`, http.StatusInternalServerError)
+			return
+		}
 		// Connection verification (VerifyToken) lists the tokens collection.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -202,6 +210,9 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case r.Method == http.MethodPost && suffix == "":
+		if m.createDelay > 0 {
+			time.Sleep(m.createDelay)
+		}
 		var body struct {
 			Scope       string `json:"scope"`
 			Description string `json:"description"`
@@ -234,6 +245,10 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case r.Method == http.MethodDelete && suffix != "":
+		if m.failRevoke {
+			http.Error(w, `{"detail":"delete failed"}`, http.StatusInternalServerError)
+			return
+		}
 		idStr := strings.TrimSuffix(suffix, "/")
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {

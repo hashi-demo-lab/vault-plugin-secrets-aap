@@ -154,6 +154,9 @@ func (b *aapBackend) pathConfigRead(ctx context.Context, req *logical.Request, _
 // pathConfigWrite creates or updates the configuration, then resets the cached
 // client so subsequent operations use the new settings.
 func (b *aapBackend) pathConfigWrite(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	b.configLock.Lock()
+	defer b.configLock.Unlock()
+
 	config, err := getConfig(ctx, req.Storage)
 	if err != nil {
 		return nil, err
@@ -175,16 +178,38 @@ func (b *aapBackend) pathConfigWrite(ctx context.Context, req *logical.Request, 
 	}
 
 	credSupplied := false
-	if token, ok := data.GetOk("token"); ok {
-		config.Token = token.(string)
-		credSupplied = true
+	tokenRaw, tokenSupplied := data.GetOk("token")
+	usernameRaw, usernameSupplied := data.GetOk("username")
+	passwordRaw, passwordSupplied := data.GetOk("password")
+
+	requestHasBearer := tokenSupplied && tokenRaw.(string) != ""
+	requestHasBasic := (usernameSupplied && usernameRaw.(string) != "") ||
+		(passwordSupplied && passwordRaw.(string) != "")
+	if requestHasBearer && requestHasBasic {
+		return logical.ErrorResponse("provide either token or username+password, not both"), nil
 	}
-	if username, ok := data.GetOk("username"); ok {
-		config.Username = username.(string)
+
+	if tokenSupplied {
+		config.Token = tokenRaw.(string)
+		config.TokenID = 0
+		if config.Token != "" {
+			config.Username = ""
+			config.Password = ""
+			credSupplied = true
+		}
 	}
-	if password, ok := data.GetOk("password"); ok {
-		config.Password = password.(string)
-		credSupplied = true
+	if usernameSupplied {
+		config.Username = usernameRaw.(string)
+	}
+	if passwordSupplied {
+		config.Password = passwordRaw.(string)
+		if config.Password != "" {
+			credSupplied = true
+		}
+	}
+	if requestHasBasic {
+		config.Token = ""
+		config.TokenID = 0
 	}
 
 	if apiPath, ok := data.GetOk("tokens_api_path"); ok {
@@ -199,6 +224,10 @@ func (b *aapBackend) pathConfigWrite(ctx context.Context, req *logical.Request, 
 
 	if skip, ok := data.GetOk("skip_tls_verify"); ok {
 		config.SkipTLSVerify = skip.(bool)
+	}
+
+	if configConnectionChanged(oldConfig, config) {
+		config.TokenID = 0
 	}
 
 	// Exactly one auth scheme: a bearer token, or basic username+password.
@@ -258,6 +287,9 @@ func configConnectionChanged(before, after *aapConfig) bool {
 
 // pathConfigDelete removes the configuration and resets the client.
 func (b *aapBackend) pathConfigDelete(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+	b.configLock.Lock()
+	defer b.configLock.Unlock()
+
 	if err := req.Storage.Delete(ctx, configStoragePath); err != nil {
 		return nil, err
 	}

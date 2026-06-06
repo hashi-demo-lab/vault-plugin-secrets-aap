@@ -71,8 +71,8 @@ func pathRole(b *aapBackend) []*framework.Path {
 				},
 				"scope": {
 					Type:        framework.TypeString,
-					Default:     "read",
-					Description: "OAuth2 scope granted to minted tokens: 'read' or 'write'. Defaults to least-privilege 'read'.",
+					Default:     "write",
+					Description: "OAuth2 scope granted to minted tokens: 'read' or 'write'. Defaults to 'write' for backward compatibility; set 'read' explicitly for least privilege.",
 				},
 				"description": {
 					Type:        framework.TypeString,
@@ -80,7 +80,7 @@ func pathRole(b *aapBackend) []*framework.Path {
 				},
 				"username": {
 					Type:        framework.TypeString,
-					Description: "Optional AAP username the minted token must be owned by. Acts as a guard: issuance fails if the owner does not match. Pair with bootstrap_token to mint as that user.",
+					Description: "Optional AAP username the minted token must be owned by. Requires bootstrap_token, which is used to mint as that user.",
 				},
 				"bootstrap_token": {
 					Type:        framework.TypeString,
@@ -205,6 +205,10 @@ func (b *aapBackend) pathRolesWrite(ctx context.Context, req *logical.Request, d
 
 	if application, ok := data.GetOk("application"); ok {
 		role.Application = application.(string)
+	}
+
+	if role.Username != "" && role.BootstrapToken == "" {
+		return logical.ErrorResponse("username requires bootstrap_token so the token can be minted as that AAP user"), nil
 	}
 
 	if ttlRaw, ok := data.GetOk("ttl"); ok {

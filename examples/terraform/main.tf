@@ -1,9 +1,9 @@
 ###############################################################################
 # Example: configure the AAP secrets engine with Terraform.
 #
-# Manages the mount, connection config, and an issuance role, then reads a
-# dynamic token. Requires the plugin to be registered in Vault's plugin catalog
-# (see the repo README "Quick start"); this config enables and configures it.
+# Manages the mount, connection config, and an issuance role. Requires the plugin
+# to be registered in Vault's plugin catalog (see the repo README "Quick start");
+# this config enables and configures it.
 ###############################################################################
 
 terraform {
@@ -59,17 +59,9 @@ resource "vault_generic_endpoint" "role_ci" {
   })
 }
 
-# Read a dynamic token (each apply/refresh mints a fresh leased token).
-data "vault_generic_secret" "ci_token" {
-  depends_on = [vault_generic_endpoint.role_ci]
-  path       = "${vault_mount.aap.path}/creds/ci"
-}
-
-output "ci_token_id" {
-  value = data.vault_generic_secret.ci_token.data["token_id"]
-}
-
-output "ci_token" {
-  value     = data.vault_generic_secret.ci_token.data["token"]
-  sensitive = true
+# Read this path at consume time with `vault read`; do not read dynamic
+# credentials through Terraform data sources because Terraform persists data
+# source results in state.
+output "ci_creds_path" {
+  value = "${vault_mount.aap.path}/creds/ci"
 }

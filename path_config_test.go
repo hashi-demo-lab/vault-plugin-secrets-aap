@@ -218,6 +218,80 @@ func TestConfig_BasicAuth(t *testing.T) {
 	require.NotContains(t, resp.Data, "password", "password must never be returned")
 }
 
+func TestConfig_UpdateTokenClearsRotateRootTokenID(t *testing.T) {
+	m := newMockAAP("admin-token")
+	m.addIdentity("manual-token", 2)
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config/rotate-root", Storage: s,
+	})
+	require.NoError(t, err)
+	cfg, err := getConfig(ctx, s)
+	require.NoError(t, err)
+	require.NotZero(t, cfg.TokenID)
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"token": "manual-token",
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "manual token update should succeed: %v", resp)
+
+	cfg, err = getConfig(ctx, s)
+	require.NoError(t, err)
+	require.Equal(t, "manual-token", cfg.Token)
+	require.Zero(t, cfg.TokenID, "operator-supplied tokens have no known AAP token id")
+}
+
+func TestConfig_CanSwitchAuthSchemes(t *testing.T) {
+	m := newMockAAP("admin-token")
+	m.addBasicIdentity("svc-admin", "s3cret", 2)
+	m.addIdentity("rotated-token", 2)
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"username": "svc-admin",
+			"password": "s3cret",
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "bearer -> basic should succeed: %v", resp)
+	cfg, err := getConfig(ctx, s)
+	require.NoError(t, err)
+	require.Empty(t, cfg.Token)
+	require.Equal(t, "svc-admin", cfg.Username)
+	require.Equal(t, "s3cret", cfg.Password)
+
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"token": "rotated-token",
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "basic -> bearer should succeed: %v", resp)
+	cfg, err = getConfig(ctx, s)
+	require.NoError(t, err)
+	require.Equal(t, "rotated-token", cfg.Token)
+	require.Empty(t, cfg.Username)
+	require.Empty(t, cfg.Password)
+}
+
 func TestConfig_RejectsBothSchemes(t *testing.T) {
 	b, s := getTestBackend(t)
 	resp, err := b.HandleRequest(context.Background(), &logical.Request{

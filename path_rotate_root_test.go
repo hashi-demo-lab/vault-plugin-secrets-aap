@@ -3,7 +3,9 @@ package aap
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/stretchr/testify/require"
@@ -73,6 +75,69 @@ func TestRotateRoot_BasicAuthRejected(t *testing.T) {
 	require.NotNil(t, resp)
 	require.True(t, resp.IsError())
 	require.Contains(t, resp.Error().Error(), "only supported for token")
+}
+
+func TestRotateRoot_ReportsNewTokenCleanupFailure(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+
+	m.failVerify = true
+	m.failRevoke = true
+	_, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config/rotate-root", Storage: s,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to revoke newly minted root token")
+	require.Equal(t, 1, m.liveCount(), "the cleanup failure should be visible because the new root token remains live")
+}
+
+func TestRotateRoot_ConcurrentRotationsDoNotOrphanIntermediateToken(t *testing.T) {
+	m := newMockAAP("admin-token")
+	m.createDelay = 50 * time.Millisecond
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			resp, err := b.HandleRequest(ctx, &logical.Request{
+				Operation: logical.UpdateOperation, Path: "config/rotate-root", Storage: s,
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			if resp != nil && resp.IsError() {
+				errs <- resp.Error()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	cfg, err := getConfig(ctx, s)
+	require.NoError(t, err)
+	require.NotZero(t, cfg.TokenID)
+	require.Equal(t, 1, m.liveCount(), "only the currently configured root token should remain live")
+	require.False(t, m.wasRevoked(cfg.TokenID), "the configured root token should be the surviving token")
 }
 
 // TestRevoke_FallsBackToCurrentConfig confirms that when the lease's snapshot

@@ -33,8 +33,9 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 // changes can safely invalidate it.
 type aapBackend struct {
 	*framework.Backend
-	lock   sync.RWMutex
-	client *aapClient
+	lock       sync.RWMutex
+	configLock sync.Mutex
+	client     *aapClient
 }
 
 // backend builds the framework.Backend wiring together every path and the
