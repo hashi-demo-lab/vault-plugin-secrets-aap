@@ -74,9 +74,9 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 	// token is owned by the engine's configured identity (the default).
 	mintClient := adminClient
 	if role.BootstrapToken != "" {
-		botConfig := cloneConfig(config)
-		botConfig.Token = role.BootstrapToken
-		mintClient, err = newClient(botConfig)
+		// A bootstrap token is always a bearer token, regardless of how the
+		// engine's own config authenticates.
+		mintClient, err = newClientWithAuth(config, bearerAuth{token: role.BootstrapToken})
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid bootstrap_token for role: %w", err)
 		}

@@ -62,7 +62,7 @@ func TestConfig_CRUD(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	require.True(t, resp.IsError())
-	require.Contains(t, resp.Error().Error(), "token is required")
+	require.Contains(t, resp.Error().Error(), "credential (token or password) is required")
 
 	// Supplying a token makes the endpoint rotation explicit.
 	resp, err = b.HandleRequest(ctx, &logical.Request{
@@ -183,6 +183,67 @@ func TestConfig_ExistenceCheck(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, exists)
+}
+
+func TestConfig_BasicAuth(t *testing.T) {
+	m := newMockAAP("admin-token")
+	m.addBasicIdentity("svc-admin", "s3cret", 2)
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+
+	// Configure with basic auth (no token). Verification runs against the mock.
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"address":         srv.URL,
+			"username":        "svc-admin",
+			"password":        "s3cret",
+			"skip_tls_verify": true,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, resp != nil && resp.IsError(), "basic-auth config should succeed: %v", resp)
+
+	// Read shows auth_type/username but never the password.
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "config", Storage: s,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "basic", resp.Data["auth_type"])
+	require.Equal(t, "svc-admin", resp.Data["username"])
+	require.Equal(t, true, resp.Data["password_set"])
+	require.NotContains(t, resp.Data, "password", "password must never be returned")
+}
+
+func TestConfig_RejectsBothSchemes(t *testing.T) {
+	b, s := getTestBackend(t)
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.CreateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"address": "https://aap.example.com", "token": "t", "username": "u", "password": "p",
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.IsError())
+	require.Contains(t, resp.Error().Error(), "not both")
+}
+
+func TestConfig_BasicAuthRequiresBoth(t *testing.T) {
+	b, s := getTestBackend(t)
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.CreateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"address": "https://aap.example.com", "username": "u", // no password
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.IsError())
+	require.Contains(t, resp.Error().Error(), "username and password")
 }
 
 func TestConfig_RejectsPlainHTTPAddress(t *testing.T) {

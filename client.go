@@ -23,7 +23,43 @@ type aapClient struct {
 	httpClient *http.Client
 	address    string // normalized, no trailing slash, e.g. https://aap.example.com
 	basePath   string // normalized, leading slash, no trailing slash, e.g. /api/gateway/v1
-	token      string // privileged bearer token used to mint/revoke
+	auth       authenticator
+}
+
+// authenticator applies an authentication scheme to outgoing AAP requests. It
+// is the seam that lets the engine support multiple AAP auth schemes (bearer
+// token today, HTTP basic, others later) without the request code caring which.
+type authenticator interface {
+	authenticate(req *http.Request)
+	scheme() string
+}
+
+// bearerAuth authenticates with an OAuth2 bearer token (the engine's default and
+// the only scheme usable for per-user bootstrap tokens).
+type bearerAuth struct{ token string }
+
+func (a bearerAuth) authenticate(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+a.token)
+}
+func (a bearerAuth) scheme() string { return "bearer" }
+
+// basicAuth authenticates with an AAP username and password.
+type basicAuth struct{ username, password string }
+
+func (a basicAuth) authenticate(req *http.Request) { req.SetBasicAuth(a.username, a.password) }
+func (a basicAuth) scheme() string                 { return "basic" }
+
+// authenticatorFromConfig selects the auth scheme from stored config: basic when
+// a username/password pair is present, otherwise a bearer token.
+func authenticatorFromConfig(config *aapConfig) (authenticator, error) {
+	switch {
+	case config.Username != "" && config.Password != "":
+		return basicAuth{username: config.Username, password: config.Password}, nil
+	case config.Token != "":
+		return bearerAuth{token: config.Token}, nil
+	default:
+		return nil, errMissingToken
+	}
 }
 
 // aapToken models the JSON returned when AAP mints an OAuth2 token. AAP returns
@@ -36,13 +72,28 @@ type aapToken struct {
 	Expires     string `json:"expires"`
 }
 
-// newClient builds an aapClient from stored configuration, including optional
-// custom CA trust and TLS-verification skipping for lab environments.
+// newClient builds an aapClient from stored configuration, selecting the auth
+// scheme from the config (bearer token or basic username/password).
 func newClient(config *aapConfig) (*aapClient, error) {
 	if config == nil {
 		return nil, errBackendNotConfigured
 	}
-	if config.Token == "" {
+	auth, err := authenticatorFromConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	return newClientWithAuth(config, auth)
+}
+
+// newClientWithAuth builds an aapClient using an explicit authenticator. It is
+// the seam for schemes the config doesn't select directly — notably per-user
+// bootstrap tokens, which always authenticate as a bearer token regardless of
+// how the engine's own config authenticates.
+func newClientWithAuth(config *aapConfig, auth authenticator) (*aapClient, error) {
+	if config == nil {
+		return nil, errBackendNotConfigured
+	}
+	if auth == nil {
 		return nil, errMissingToken
 	}
 	if config.Address == "" {
@@ -72,7 +123,7 @@ func newClient(config *aapConfig) (*aapClient, error) {
 		},
 		address:  address,
 		basePath: normalizeBasePath(config.TokensAPIPath),
-		token:    config.Token,
+		auth:     auth,
 	}, nil
 }
 
@@ -291,7 +342,7 @@ func (c *aapClient) tokenOwner(ctx context.Context, id int64) (int64, error) {
 
 // do sets auth headers, executes the request, and returns the body and status.
 func (c *aapClient) do(req *http.Request) ([]byte, int, error) {
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	c.auth.authenticate(req)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)

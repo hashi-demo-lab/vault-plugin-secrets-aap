@@ -65,13 +65,22 @@ vault lease revoke <lease_id>
 
 ### Config fields
 
+Provide **one** auth scheme: a bearer `token`, or basic `username`+`password`.
+
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `address` | yes | — | AAP base URL, no API path |
-| `token` | yes | — | privileged AAP token used to mint/revoke (write-only) |
+| `token` | one scheme | — | privileged AAP bearer token used to mint/revoke (write-only) |
+| `username` | one scheme | — | privileged AAP username for basic auth |
+| `password` | with `username` | — | password for basic auth (write-only) |
 | `tokens_api_path` | no | `/api/gateway/v1` | `/api/gateway/v1` (2.5) or `/api/controller/v2` (2.4) |
 | `ca_cert` | no | — | PEM CA to trust for the AAP endpoint |
 | `skip_tls_verify` | no | `false` | skip TLS verification (insecure; lab only) |
+
+The auth scheme is pluggable behind an internal `authenticator` interface (bearer and
+basic today); `vault read aap/config` reports `auth_type`. Bearer is recommended — a
+token is revocable and scoped, whereas a password is not. Per-user `bootstrap_token`s
+are always bearer regardless of the engine's own scheme.
 
 ### Role fields
 

@@ -27,6 +27,8 @@ type walToken struct {
 	Role                    string `json:"role"`
 	RevocationAddress       string `json:"revocation_address"`
 	RevocationToken         string `json:"revocation_token"`
+	RevocationUsername      string `json:"revocation_username"`
+	RevocationPassword      string `json:"revocation_password"`
 	RevocationTokensAPIPath string `json:"revocation_tokens_api_path"`
 	RevocationCACert        string `json:"revocation_ca_cert"`
 	RevocationSkipTLSVerify bool   `json:"revocation_skip_tls_verify"`
@@ -42,6 +44,8 @@ func newWALToken(tokenID, role string, config *aapConfig) *walToken {
 	}
 	token.RevocationAddress = config.Address
 	token.RevocationToken = config.Token
+	token.RevocationUsername = config.Username
+	token.RevocationPassword = config.Password
 	token.RevocationTokensAPIPath = config.TokensAPIPath
 	token.RevocationCACert = config.CACert
 	token.RevocationSkipTLSVerify = config.SkipTLSVerify

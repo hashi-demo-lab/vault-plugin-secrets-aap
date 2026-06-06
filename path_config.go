@@ -14,11 +14,14 @@ const configStoragePath = "config"
 // OAuth2 token endpoints. AAP 2.4 controllers use /api/controller/v2 instead.
 const defaultTokensAPIPath = "/api/gateway/v1"
 
-// aapConfig holds the engine's connection to AAP. The Token is the privileged
-// credential used to mint and revoke other tokens; it is never returned on read.
+// aapConfig holds the engine's connection to AAP. The privileged credential is
+// either a bearer Token or a Username/Password pair (basic auth); it is never
+// returned on read.
 type aapConfig struct {
 	Address       string `json:"address"`
 	Token         string `json:"token"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
 	TokensAPIPath string `json:"tokens_api_path"`
 	CACert        string `json:"ca_cert"`
 	SkipTLSVerify bool   `json:"skip_tls_verify"`
@@ -43,10 +46,24 @@ func pathConfig(b *aapBackend) *framework.Path {
 			},
 			"token": {
 				Type:        framework.TypeString,
-				Description: "Privileged AAP OAuth2 token the engine uses to mint and revoke tokens.",
-				Required:    true,
+				Description: "Privileged AAP OAuth2 token the engine uses to mint and revoke tokens (bearer auth). Provide this OR username+password.",
 				DisplayAttrs: &framework.DisplayAttributes{
 					Name:      "AAP Token",
+					Sensitive: true,
+				},
+			},
+			"username": {
+				Type:        framework.TypeString,
+				Description: "Privileged AAP username for basic auth. Provide with password as an alternative to token.",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name: "AAP Username",
+				},
+			},
+			"password": {
+				Type:        framework.TypeString,
+				Description: "Password for the basic-auth username. Write-only; never returned on read.",
+				DisplayAttrs: &framework.DisplayAttributes{
+					Name:      "AAP Password",
 					Sensitive: true,
 				},
 			},
@@ -111,13 +128,20 @@ func (b *aapBackend) pathConfigRead(ctx context.Context, req *logical.Request, _
 		return nil, nil
 	}
 
+	authType := "bearer"
+	if config.Username != "" {
+		authType = "basic"
+	}
 	return &logical.Response{
 		Data: map[string]interface{}{
 			"address":         config.Address,
 			"tokens_api_path": config.TokensAPIPath,
 			"skip_tls_verify": config.SkipTLSVerify,
 			"ca_cert_set":     config.CACert != "",
+			"auth_type":       authType,
 			"token_set":       config.Token != "",
+			"username":        config.Username,
+			"password_set":    config.Password != "",
 		},
 	}, nil
 }
@@ -145,12 +169,17 @@ func (b *aapBackend) pathConfigWrite(ctx context.Context, req *logical.Request, 
 		return logical.ErrorResponse("address is required"), nil
 	}
 
-	tokenSupplied := false
+	credSupplied := false
 	if token, ok := data.GetOk("token"); ok {
-		tokenSupplied = true
 		config.Token = token.(string)
-	} else if createOperation {
-		return logical.ErrorResponse("token is required"), nil
+		credSupplied = true
+	}
+	if username, ok := data.GetOk("username"); ok {
+		config.Username = username.(string)
+	}
+	if password, ok := data.GetOk("password"); ok {
+		config.Password = password.(string)
+		credSupplied = true
 	}
 
 	if apiPath, ok := data.GetOk("tokens_api_path"); ok {
@@ -167,8 +196,20 @@ func (b *aapBackend) pathConfigWrite(ctx context.Context, req *logical.Request, 
 		config.SkipTLSVerify = skip.(bool)
 	}
 
-	if !createOperation && !tokenSupplied && configConnectionChanged(oldConfig, config) {
-		return logical.ErrorResponse("token is required when changing AAP connection or TLS trust settings"), nil
+	// Exactly one auth scheme: a bearer token, or basic username+password.
+	hasBearer := config.Token != ""
+	hasBasic := config.Username != "" || config.Password != ""
+	switch {
+	case hasBearer && hasBasic:
+		return logical.ErrorResponse("provide either token or username+password, not both"), nil
+	case hasBasic && (config.Username == "" || config.Password == ""):
+		return logical.ErrorResponse("both username and password are required for basic auth"), nil
+	case !hasBearer && !hasBasic:
+		return logical.ErrorResponse("a credential is required: set token, or username and password"), nil
+	}
+
+	if !createOperation && !credSupplied && configConnectionChanged(oldConfig, config) {
+		return logical.ErrorResponse("a credential (token or password) is required when changing AAP connection or TLS trust settings"), nil
 	}
 	if _, err := validateAddress(config.Address); err != nil {
 		return logical.ErrorResponse(err.Error()), nil
