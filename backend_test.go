@@ -178,12 +178,16 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		// AAP owns the token to the authenticating identity, ignoring any
 		// requested owner — this is the behavior the engine relies on.
 		m.mintUsers[id] = callerID
+		// The minted token value is itself a usable bearer credential owned by
+		// the caller (so rotate-root's new token authenticates).
+		tokenValue := "secret-token-" + strconv.FormatInt(id, 10)
+		m.identities["Bearer "+tokenValue] = callerID
 		m.created++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":          id,
-			"token":       "secret-token-" + strconv.FormatInt(id, 10),
+			"token":       tokenValue,
 			"scope":       body.Scope,
 			"description": body.Description,
 			"expires":     time.Now().Add(365 * 24 * time.Hour).UTC().Format(time.RFC3339),
