@@ -58,7 +58,8 @@ vault lease revoke <lease_id>
 
 | Path | Ops | Purpose |
 |------|-----|---------|
-| `aap/config` | write / read / delete | AAP connection (token is write-only) |
+| `aap/config` | write / read / delete | AAP connection (credential is write-only) |
+| `aap/config/rotate-root` | write | rotate the engine's own privileged AAP token |
 | `aap/role/:name` | write / read / delete | issuance policy: scope, description, TTLs |
 | `aap/role` | list | list role names |
 | `aap/creds/:name` | read | mint a leased AAP token |
@@ -125,6 +126,19 @@ mechanism AAP supports, and avoids storing user passwords. Verified end-to-end a
 2.5 (see `TestAcceptance_PerUserMintLiveAAP`).
 
 Leave both empty for the default mint-as-engine behavior.
+
+### Rotating the root credential
+
+```bash
+vault write -f aap/config/rotate-root
+```
+
+Mints a fresh AAP token for the configured identity, verifies it, swaps it into `config`, and
+revokes the previous **engine-minted** token. The first rotation can't revoke the original
+operator-supplied token (its id is unknown to the engine) and warns you to revoke it manually;
+subsequent rotations revoke the prior token automatically. Outstanding leases still revoke
+correctly afterward — revocation falls back to the current (rotated) credential if the lease's
+snapshotted credential has been revoked. Bearer-token auth only.
 
 ## Lease model: renewable (strategy A — the Vault norm)
 

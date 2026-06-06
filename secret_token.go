@@ -128,26 +128,38 @@ func (b *aapBackend) tokenRevoke(ctx context.Context, req *logical.Request, _ *f
 		return nil, err
 	}
 
-	client, err := b.revocationClient(ctx, req.Storage, req.Secret.InternalData)
-	if err != nil {
-		return nil, fmt.Errorf("error getting client during revoke: %w", err)
-	}
-
-	if err := client.RevokeToken(ctx, id); err != nil {
+	if err := b.revokeToken(ctx, req.Storage, req.Secret.InternalData, id); err != nil {
 		return nil, fmt.Errorf("error revoking AAP token %d: %w", id, err)
 	}
 	return nil, nil
 }
 
-func (b *aapBackend) revocationClient(ctx context.Context, s logical.Storage, data map[string]interface{}) (*aapClient, error) {
+// revokeToken deletes an AAP token, preferring the lease's snapshot credential
+// and falling back to the engine's current config. The fallback matters after
+// rotate-root: the snapshot may hold a now-revoked token, but the current
+// (rotated) credential — owned by the same identity — can still delete it.
+func (b *aapBackend) revokeToken(ctx context.Context, s logical.Storage, data map[string]interface{}, id int64) error {
 	config, ok, err := configFromRevocationData(data)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if ok {
-		return newClient(config)
+		if client, cerr := newClient(config); cerr == nil {
+			if rerr := client.RevokeToken(ctx, id); rerr == nil {
+				return nil
+			}
+			// Snapshot credential failed (e.g. revoked by rotate-root); fall back.
+		}
 	}
-	return b.getClient(ctx, s)
+
+	client, err := b.getClient(ctx, s)
+	if err != nil {
+		if ok {
+			return fmt.Errorf("snapshot revoke failed and current config unavailable: %w", err)
+		}
+		return err
+	}
+	return client.RevokeToken(ctx, id)
 }
 
 // tokenRenew extends the lease using the originating role's TTL/MaxTTL. The

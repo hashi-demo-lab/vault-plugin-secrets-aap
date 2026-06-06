@@ -61,6 +61,7 @@ func backend() *aapBackend {
 			pathRole(&b),
 			[]*framework.Path{
 				pathConfig(&b),
+				b.pathRotateRoot(),
 				pathCredentials(&b),
 			},
 		),

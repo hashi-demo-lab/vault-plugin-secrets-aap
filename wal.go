@@ -73,9 +73,5 @@ func (b *aapBackend) walRollback(ctx context.Context, req *logical.Request, kind
 		return fmt.Errorf("invalid token_id %q in WAL: %w", idStr, err)
 	}
 
-	client, err := b.revocationClient(ctx, req.Storage, m)
-	if err != nil {
-		return err
-	}
-	return client.RevokeToken(ctx, id)
+	return b.revokeToken(ctx, req.Storage, m, id)
 }

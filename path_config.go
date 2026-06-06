@@ -25,6 +25,11 @@ type aapConfig struct {
 	TokensAPIPath string `json:"tokens_api_path"`
 	CACert        string `json:"ca_cert"`
 	SkipTLSVerify bool   `json:"skip_tls_verify"`
+
+	// TokenID is the AAP id of the current bearer Token when the engine minted it
+	// (via rotate-root), enabling the next rotation to revoke it. Zero for an
+	// operator-supplied token whose id the engine does not know.
+	TokenID int64 `json:"token_id"`
 }
 
 // pathConfig defines the config/ path and its schema.
