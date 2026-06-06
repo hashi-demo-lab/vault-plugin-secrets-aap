@@ -117,9 +117,14 @@ func newClientWithAuth(config *aapConfig, auth authenticator) (*aapClient, error
 		tlsConfig.RootCAs = pool
 	}
 
+	timeout := defaultHTTPTimeout
+	if config.RequestTimeout > 0 {
+		timeout = config.RequestTimeout
+	}
+
 	return &aapClient{
 		httpClient: &http.Client{
-			Timeout:   defaultHTTPTimeout,
+			Timeout:   timeout,
 			Transport: &http.Transport{TLSClientConfig: tlsConfig},
 		},
 		address:  address,
@@ -292,6 +297,10 @@ func (c *aapClient) CreateToken(ctx context.Context, scope, description string) 
 
 // createTokenForApp mints a token, optionally bound to an OAuth2 application when
 // applicationID > 0 (an application-scoped token); 0 mints a personal token.
+//
+// Note on expiry: AAP controls token lifetime globally via its OAUTH2_PROVIDER
+// settings and ignores any client-supplied per-token "expires", so the engine
+// does not attempt to set one — the Vault lease is the per-token clock.
 func (c *aapClient) createTokenForApp(ctx context.Context, scope, description string, applicationID int64) (*aapToken, error) {
 	reqBody := map[string]interface{}{
 		"scope":       scope,

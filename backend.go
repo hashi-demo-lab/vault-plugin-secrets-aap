@@ -69,8 +69,11 @@ func backend() *aapBackend {
 		Secrets: []*framework.Secret{
 			b.aapToken(),
 		},
-		BackendType:       logical.TypeLogical,
-		Invalidate:        b.invalidate,
+		BackendType: logical.TypeLogical,
+		Invalidate:  b.invalidate,
+		// RotateCredential is invoked by the Rotation Manager when the scheduled
+		// root-rotation job registered by the config endpoint fires.
+		RotateCredential:  b.rotateRootCredential,
 		WALRollback:       b.walRollback,
 		WALRollbackMinAge: walRollbackMinAge,
 	}

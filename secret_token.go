@@ -92,7 +92,16 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 		}
 	}
 
-	token, err := mintClient.createTokenForApp(ctx, role.Scope, role.Description, applicationID)
+	// Prefix the description so engine-issued tokens are identifiable — and
+	// sweepable — in AAP. (AAP controls token expiry globally via OAUTH2_PROVIDER
+	// and ignores any client-supplied per-token expiry, so the description is the
+	// engine's only lever for tagging orphaned tokens for cleanup.)
+	description := role.Description
+	if config.TokenDescriptionPrefix != "" {
+		description = config.TokenDescriptionPrefix + description
+	}
+
+	token, err := mintClient.createTokenForApp(ctx, role.Scope, description, applicationID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error creating AAP token: %w", err)
 	}

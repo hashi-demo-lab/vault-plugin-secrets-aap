@@ -31,3 +31,4 @@ examples/terraform/*.tfvars
 examples/terraform/*.tfvars.json
 examples/terraform/crash.log
 vault-dev-smoke.log
+vault-e2e.log

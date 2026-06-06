@@ -86,6 +86,7 @@ type mockAAP struct {
 	identities map[string]int64 // bearer token -> owner user id
 	mintUsers  map[int64]int64  // token id -> owner id recorded at mint
 	mintApps   map[int64]int64  // token id -> application id recorded at mint
+	mintDescs  map[int64]string // token id -> description sent at mint
 
 	createDelay time.Duration
 	failVerify  bool
@@ -111,6 +112,7 @@ func newMockAAP(bearer string) *mockAAP {
 		identities: map[string]int64{"Bearer " + bearer: 2},
 		mintUsers:  map[int64]int64{},
 		mintApps:   map[int64]int64{},
+		mintDescs:  map[int64]string{},
 	}
 }
 
@@ -169,6 +171,13 @@ func (m *mockAAP) mintAppFor(id int64) int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.mintApps[id]
+}
+
+// mintDescFor reports the description the engine sent when minting a token id.
+func (m *mockAAP) mintDescFor(id int64) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mintDescs[id]
 }
 
 // handleUsers serves the ?username= lookup ResolveUserID performs.
@@ -263,6 +272,7 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		// AAP owns the token to the authenticating identity, ignoring any
 		// requested owner — this is the behavior the engine relies on.
 		m.mintUsers[id] = callerID
+		m.mintDescs[id] = body.Description
 		// AAP honors the application binding on mint (unless ignoreApp is set).
 		if !m.ignoreApp {
 			m.mintApps[id] = body.Application

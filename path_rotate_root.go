@@ -34,15 +34,31 @@ func (b *aapBackend) pathRotateRoot() *framework.Path {
 	}
 }
 
-// pathRotateRootWrite mints a new privileged token for the configured identity,
-// verifies it works, swaps it into config, then best-effort revokes the previous
+// rotateRootCredential is the Rotation Manager callback (wired as
+// b.Backend.RotateCredential). When the RM fires the scheduled job registered by
+// the config endpoint, the framework routes a RotationOperation here. It shares
+// the exact rotation logic with the manual config/rotate-root endpoint; only the
+// response (warnings) is discarded, since the RM only inspects the error.
+func (b *aapBackend) rotateRootCredential(ctx context.Context, req *logical.Request) error {
+	_, err := b.rotateRoot(ctx, req.Storage)
+	return err
+}
+
+// pathRotateRootWrite is the manual config/rotate-root handler; it delegates to
+// the shared rotateRoot routine.
+func (b *aapBackend) pathRotateRootWrite(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+	return b.rotateRoot(ctx, req.Storage)
+}
+
+// rotateRoot mints a new privileged token for the configured identity, verifies
+// it works, swaps it into config, then best-effort revokes the previous
 // engine-minted token. Only supported for bearer-token auth — basic-auth
 // rotation would mean changing a password, a different operation.
-func (b *aapBackend) pathRotateRootWrite(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+func (b *aapBackend) rotateRoot(ctx context.Context, storage logical.Storage) (*logical.Response, error) {
 	b.configLock.Lock()
 	defer b.configLock.Unlock()
 
-	config, err := getConfig(ctx, req.Storage)
+	config, err := getConfig(ctx, storage)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +100,7 @@ func (b *aapBackend) pathRotateRootWrite(ctx context.Context, req *logical.Reque
 	if err != nil {
 		return nil, cleanupNewRootToken(ctx, client, newToken.ID, err)
 	}
-	if err := req.Storage.Put(ctx, entry); err != nil {
+	if err := storage.Put(ctx, entry); err != nil {
 		return nil, cleanupNewRootToken(ctx, client, newToken.ID, err)
 	}
 	b.reset()
