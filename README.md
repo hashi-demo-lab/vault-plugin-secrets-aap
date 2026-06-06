@@ -95,8 +95,19 @@ are always bearer regardless of the engine's own scheme.
 | `description` | — | description applied to minted AAP tokens |
 | `username` | — | optional AAP user the minted token must be owned by (ownership guard; see below) |
 | `bootstrap_token` | — | optional: that user's own AAP token, so tokens are minted *as* them (write-only) |
+| `application` | — | optional AAP OAuth2 application name to bind minted tokens to |
 | `ttl` | mount default | lease TTL for minted tokens |
 | `max_ttl` | mount default | maximum lease TTL |
+
+#### Application-scoped tokens (`application`)
+
+Set `application` to bind minted tokens to a named AAP OAuth2 application (so they can be
+managed at the application level in AAP). The engine resolves the name to its id
+(`GET {base}/applications/?name=`), requests the binding on mint, then **verifies** it — if the
+minted token isn't bound to that application it is revoked and the request errors (the same
+guard pattern used for per-user issuance). Composable with `username`/`bootstrap_token`.
+Unit-tested with the guard; verify live against an AAP that has the target OAuth2 application
+(`TestCredentials_AppScopedMint`).
 
 #### Per-user token issuance (`bootstrap_token` + `username`)
 

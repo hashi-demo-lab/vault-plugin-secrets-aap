@@ -133,6 +133,40 @@ func TestClient_BasicAuth(t *testing.T) {
 	require.Equal(t, int64(5), m.mintUserFor(tok.ID), "basic-auth client mints as its user")
 }
 
+func TestClient_ResolveApplicationID(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "admin-token")
+	ctx := context.Background()
+
+	id, err := c.ResolveApplicationID(ctx, "ci-app")
+	require.NoError(t, err)
+	require.Equal(t, int64(20), id)
+
+	_, err = c.ResolveApplicationID(ctx, "nope")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not found")
+}
+
+func TestClient_CreateToken_BindsApplication(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL, "admin-token")
+	ctx := context.Background()
+
+	tok, err := c.createTokenForApp(ctx, "read", "app-bound", 20)
+	require.NoError(t, err)
+	require.Equal(t, int64(20), m.mintAppFor(tok.ID))
+
+	app, err := c.tokenApplication(ctx, tok.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(20), app)
+}
+
 func TestClient_authenticatorFromConfig(t *testing.T) {
 	a, err := authenticatorFromConfig(&aapConfig{Token: "t"})
 	require.NoError(t, err)
