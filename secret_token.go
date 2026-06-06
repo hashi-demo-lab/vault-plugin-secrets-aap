@@ -82,9 +82,33 @@ func (b *aapBackend) createToken(ctx context.Context, s logical.Storage, role *a
 		}
 	}
 
-	token, err := mintClient.CreateToken(ctx, role.Scope, role.Description)
+	// Application-scoped tokens: resolve the application name to its id so the
+	// mint can bind the token to it. Verified by the application guard below.
+	var applicationID int64
+	if role.Application != "" {
+		applicationID, err = adminClient.ResolveApplicationID(ctx, role.Application)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error resolving AAP application %q: %w", role.Application, err)
+		}
+	}
+
+	token, err := mintClient.createTokenForApp(ctx, role.Scope, role.Description, applicationID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error creating AAP token: %w", err)
+	}
+
+	// Application-binding guard: confirm the minted token is bound to the intended
+	// application; otherwise revoke and fail rather than issue a mis-scoped token.
+	if applicationID > 0 {
+		boundApp, verr := adminClient.tokenApplication(ctx, token.ID)
+		if verr != nil {
+			_ = adminClient.RevokeToken(ctx, token.ID)
+			return nil, nil, fmt.Errorf("could not verify application binding of minted token: %w", verr)
+		}
+		if boundApp != applicationID {
+			_ = adminClient.RevokeToken(ctx, token.ID)
+			return nil, nil, fmt.Errorf("token was not bound to application %q (id %d); AAP bound it to %d", role.Application, applicationID, boundApp)
+		}
 	}
 
 	// Ownership guard. When the role names a user, confirm the minted token is

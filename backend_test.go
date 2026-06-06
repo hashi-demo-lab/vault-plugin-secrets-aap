@@ -44,8 +44,14 @@ type mockAAP struct {
 	created    int              // count of successful mints
 	wantAuth   string           // admin bearer token
 	users      map[string]int64 // username -> id, for ResolveUserID lookups
+	apps       map[string]int64 // application name -> id, for ResolveApplicationID
 	identities map[string]int64 // bearer token -> owner user id
 	mintUsers  map[int64]int64  // token id -> owner id recorded at mint
+	mintApps   map[int64]int64  // token id -> application id recorded at mint
+
+	// ignoreApp reproduces an AAP that drops the requested application binding
+	// (mints a personal token regardless), so the application guard can be tested.
+	ignoreApp bool
 }
 
 func newMockAAP(bearer string) *mockAAP {
@@ -56,10 +62,13 @@ func newMockAAP(bearer string) *mockAAP {
 		wantAuth: bearer,
 		// Service accounts a per-user role can target in tests.
 		users: map[string]int64{"admin": 2, "svc-deploy": 7, "svc-readonly": 8},
+		// OAuth2 applications an application-scoped role can target.
+		apps: map[string]int64{"ci-app": 20, "deploy-app": 21},
 		// identities is keyed by the full Authorization header value -> owner id.
 		// The admin bearer token mints as id 2 ("admin"); more are added per test.
 		identities: map[string]int64{"Bearer " + bearer: 2},
 		mintUsers:  map[int64]int64{},
+		mintApps:   map[int64]int64{},
 	}
 }
 
@@ -91,7 +100,33 @@ func (m *mockAAP) server(tb testing.TB) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/gateway/v1/tokens/", m.handleTokens)
 	mux.HandleFunc("/api/gateway/v1/users/", m.handleUsers)
+	mux.HandleFunc("/api/gateway/v1/applications/", m.handleApplications)
 	return httptest.NewTLSServer(mux)
+}
+
+// handleApplications serves the ?name= lookup ResolveApplicationID performs.
+func (m *mockAAP) handleApplications(w http.ResponseWriter, r *http.Request) {
+	if _, ok := m.ownerFor(r); !ok {
+		http.Error(w, `{"detail":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	name := r.URL.Query().Get("name")
+	results := []map[string]interface{}{}
+	if id, ok := m.apps[name]; ok {
+		results = append(results, map[string]interface{}{"id": id, "name": name})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"count": len(results), "results": results})
+}
+
+// mintAppFor reports the application id a token was bound to at mint.
+func (m *mockAAP) mintAppFor(id int64) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mintApps[id]
 }
 
 // handleUsers serves the ?username= lookup ResolveUserID performs.
@@ -163,13 +198,14 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"id": id, "user": m.mintUsers[id], "scope": scope,
+			"id": id, "user": m.mintUsers[id], "scope": scope, "application": m.mintApps[id],
 		})
 
 	case r.Method == http.MethodPost && suffix == "":
 		var body struct {
 			Scope       string `json:"scope"`
 			Description string `json:"description"`
+			Application int64  `json:"application"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		id := m.nextID
@@ -178,6 +214,10 @@ func (m *mockAAP) handleTokens(w http.ResponseWriter, r *http.Request) {
 		// AAP owns the token to the authenticating identity, ignoring any
 		// requested owner — this is the behavior the engine relies on.
 		m.mintUsers[id] = callerID
+		// AAP honors the application binding on mint (unless ignoreApp is set).
+		if !m.ignoreApp {
+			m.mintApps[id] = body.Application
+		}
 		// The minted token value is itself a usable bearer credential owned by
 		// the caller (so rotate-root's new token authenticates).
 		tokenValue := "secret-token-" + strconv.FormatInt(id, 10)

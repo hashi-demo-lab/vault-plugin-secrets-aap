@@ -35,6 +35,11 @@ type aapRoleEntry struct {
 	// achieved. Empty mints as the engine's own configured identity. Stored
 	// seal-wrapped (role/* is in SealWrapStorage) and never returned on read.
 	BootstrapToken string `json:"bootstrap_token"`
+
+	// Application, when set, is the name of an AAP OAuth2 application to bind
+	// minted tokens to (application-scoped tokens). Resolved to an id at mint
+	// time; the binding is verified after minting. Empty mints personal tokens.
+	Application string `json:"application"`
 }
 
 // toResponseData renders a role for the read/list API.
@@ -44,6 +49,7 @@ func (r *aapRoleEntry) toResponseData() map[string]interface{} {
 		"description":         r.Description,
 		"username":            r.Username,
 		"bootstrap_token_set": r.BootstrapToken != "",
+		"application":         r.Application,
 		"ttl":                 int64(r.TTL.Seconds()),
 		"max_ttl":             int64(r.MaxTTL.Seconds()),
 	}
@@ -83,6 +89,10 @@ func pathRole(b *aapBackend) []*framework.Path {
 						Name:      "Bootstrap Token",
 						Sensitive: true,
 					},
+				},
+				"application": {
+					Type:        framework.TypeString,
+					Description: "Optional AAP OAuth2 application name to bind minted tokens to (application-scoped tokens). The binding is verified after minting.",
 				},
 				"ttl": {
 					Type:        framework.TypeDurationSecond,
@@ -191,6 +201,10 @@ func (b *aapBackend) pathRolesWrite(ctx context.Context, req *logical.Request, d
 
 	if bootstrap, ok := data.GetOk("bootstrap_token"); ok {
 		role.BootstrapToken = bootstrap.(string)
+	}
+
+	if application, ok := data.GetOk("application"); ok {
+		role.Application = application.(string)
 	}
 
 	if ttlRaw, ok := data.GetOk("ttl"); ok {

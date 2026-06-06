@@ -70,6 +70,7 @@ type aapToken struct {
 	Scope       string `json:"scope"`
 	Description string `json:"description"`
 	Expires     string `json:"expires"`
+	Application int64  `json:"application"` // OAuth2 application id, 0/null for personal tokens
 }
 
 // newClient builds an aapClient from stored configuration, selecting the auth
@@ -172,6 +173,60 @@ func (c *aapClient) usersURL(suffix string) string {
 	return fmt.Sprintf("%s%s/users/%s", c.address, c.basePath, suffix)
 }
 
+// applicationsURL builds a URL under the applications collection.
+func (c *aapClient) applicationsURL(suffix string) string {
+	return fmt.Sprintf("%s%s/applications/%s", c.address, c.basePath, suffix)
+}
+
+// aapApplication is the subset of an AAP OAuth2 application needed to resolve a
+// role's application name to the numeric id the token-creation payload requires.
+type aapApplication struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// ResolveApplicationID looks up an AAP OAuth2 application by exact name and
+// returns its numeric id, erroring on no match or ambiguity.
+func (c *aapClient) ResolveApplicationID(ctx context.Context, name string) (int64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.applicationsURL("?name="+url.QueryEscape(name)), nil)
+	if err != nil {
+		return 0, err
+	}
+
+	respBody, status, err := c.do(req)
+	if err != nil {
+		return 0, err
+	}
+	if status != http.StatusOK {
+		return 0, fmt.Errorf("AAP application lookup failed (HTTP %d): %s", status, truncate(respBody))
+	}
+
+	var list struct {
+		Results []aapApplication `json:"results"`
+	}
+	if err := json.Unmarshal(respBody, &list); err != nil {
+		return 0, fmt.Errorf("failed to decode AAP application lookup: %w", err)
+	}
+
+	var matches []aapApplication
+	for _, a := range list.Results {
+		if a.Name == name {
+			matches = append(matches, a)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return 0, fmt.Errorf("AAP application %q not found", name)
+	case 1:
+		if matches[0].ID <= 0 {
+			return 0, fmt.Errorf("AAP returned an invalid id for application %q", name)
+		}
+		return matches[0].ID, nil
+	default:
+		return 0, fmt.Errorf("AAP application %q is ambiguous (%d matches)", name, len(matches))
+	}
+}
+
 // aapUser is the subset of an AAP user object needed to resolve a role's
 // username to the numeric id the token-creation payload requires.
 type aapUser struct {
@@ -224,7 +279,7 @@ func (c *aapClient) ResolveUserID(ctx context.Context, username string) (int64, 
 	}
 }
 
-// CreateToken mints a new AAP OAuth2 token with the given scope and
+// CreateToken mints a new AAP OAuth2 personal token with the given scope and
 // description. The returned token's secret value is only available here.
 //
 // The token is owned by whichever identity this client authenticates as (AAP
@@ -232,10 +287,20 @@ func (c *aapClient) ResolveUserID(ctx context.Context, username string) (int64, 
 // issuance is therefore achieved by authenticating with that user's own token —
 // see the role bootstrap_token handling in createToken.
 func (c *aapClient) CreateToken(ctx context.Context, scope, description string) (*aapToken, error) {
-	payload, err := json.Marshal(map[string]string{
+	return c.createTokenForApp(ctx, scope, description, 0)
+}
+
+// createTokenForApp mints a token, optionally bound to an OAuth2 application when
+// applicationID > 0 (an application-scoped token); 0 mints a personal token.
+func (c *aapClient) createTokenForApp(ctx context.Context, scope, description string, applicationID int64) (*aapToken, error) {
+	reqBody := map[string]interface{}{
 		"scope":       scope,
 		"description": description,
-	})
+	}
+	if applicationID > 0 {
+		reqBody["application"] = applicationID
+	}
+	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode token request: %w", err)
 	}
@@ -317,27 +382,42 @@ func (c *aapClient) RevokeToken(ctx context.Context, id int64) error {
 	}
 }
 
-// tokenOwner returns the AAP user id that owns a token. AAP returns the owner
-// in the token object's "user" field; used to verify per-user minting.
-func (c *aapClient) tokenOwner(ctx context.Context, id int64) (int64, error) {
+// tokenDetail reads a token object's owner and application-binding ids. AAP
+// returns null for an unset application, which decodes to 0. Used by the
+// ownership and application-binding guards.
+func (c *aapClient) tokenDetail(ctx context.Context, id int64) (user, application int64, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.tokensURL(fmt.Sprintf("%d/", id)), nil)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	body, status, err := c.do(req)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if status != http.StatusOK {
-		return 0, fmt.Errorf("AAP token read failed (HTTP %d): %s", status, truncate(body))
+		return 0, 0, fmt.Errorf("AAP token read failed (HTTP %d): %s", status, truncate(body))
 	}
 	var detail struct {
-		User int64 `json:"user"`
+		User        int64 `json:"user"`
+		Application int64 `json:"application"`
 	}
 	if err := json.Unmarshal(body, &detail); err != nil {
-		return 0, fmt.Errorf("failed to decode token detail: %w", err)
+		return 0, 0, fmt.Errorf("failed to decode token detail: %w", err)
 	}
-	return detail.User, nil
+	return detail.User, detail.Application, nil
+}
+
+// tokenOwner returns the AAP user id that owns a token (per-user mint guard).
+func (c *aapClient) tokenOwner(ctx context.Context, id int64) (int64, error) {
+	user, _, err := c.tokenDetail(ctx, id)
+	return user, err
+}
+
+// tokenApplication returns the OAuth2 application id a token is bound to, 0 if
+// none (application-scoped mint guard).
+func (c *aapClient) tokenApplication(ctx context.Context, id int64) (int64, error) {
+	_, app, err := c.tokenDetail(ctx, id)
+	return app, err
 }
 
 // do sets auth headers, executes the request, and returns the body and status.
