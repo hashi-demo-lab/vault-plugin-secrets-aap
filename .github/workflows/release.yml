@@ -106,6 +106,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
+          # Push the tag so it exists on the remote: changelog.use=github
+          # (and the release publish) need GitHub to resolve the tag ref.
+          # Pushing with the default GITHUB_TOKEN does not retrigger the
+          # on:push:tags workflow, so this won't cause a duplicate release.
+          git push origin "$TAG"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
