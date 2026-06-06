@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/stretchr/testify/require"
 )
@@ -31,6 +32,182 @@ func TestRevokeHelpers(t *testing.T) {
 
 	// Best-effort revoke of an already-gone token is silent (idempotent 404).
 	revokeBestEffort(ctx, cfg, tok.ID)
+}
+
+// TestCredentials_MintRevokesTokenWhenWALWriteFails asserts that if the rollback
+// WAL cannot be written after a token is minted, createCreds revokes the token
+// immediately rather than orphaning it, and surfaces the failure to the caller.
+func TestCredentials_MintRevokesTokenWhenWALWriteFails(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "read", "ttl": "1h"})
+
+	role, err := b.getRole(ctx, s, "ci")
+	require.NoError(t, err)
+
+	// Fail the WAL Put. The mint succeeds, but PutWAL cannot record rollback intent.
+	fs := &faultStorage{Storage: s, failPutPrefix: framework.WALPrefix}
+	resp, err := b.createCreds(ctx, &logical.Request{Storage: fs}, "ci", role)
+	require.Error(t, err)
+	require.Nil(t, resp)
+	require.Contains(t, err.Error(), "failed to write WAL")
+	require.Equal(t, 0, m.liveCount(), "a token minted before a failed WAL write must be revoked, not orphaned")
+}
+
+// TestCredentials_MintRevokesTokenWhenWALCommitFails asserts that if the WAL
+// safety net cannot be dropped after the lease is assembled, createCreds revokes
+// the token (best-effort) and fails, rather than handing back a lease whose WAL
+// would later trigger a spurious rollback of a still-valid token.
+func TestCredentials_MintRevokesTokenWhenWALCommitFails(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "read", "ttl": "1h"})
+
+	role, err := b.getRole(ctx, s, "ci")
+	require.NoError(t, err)
+
+	// PutWAL succeeds (Put passes through); the commit-time DeleteWAL fails.
+	fs := &faultStorage{Storage: s, failDeletePrefix: framework.WALPrefix}
+	resp, err := b.createCreds(ctx, &logical.Request{Storage: fs}, "ci", role)
+	require.Error(t, err)
+	require.Nil(t, resp)
+	require.Contains(t, err.Error(), "failed to commit WAL")
+	require.Equal(t, 0, m.liveCount(), "token must be revoked when the WAL safety net cannot be dropped")
+}
+
+// TestSecretToken_RevokeMissingTokenID asserts tokenRevoke fails clearly when the
+// lease's internal data has no token_id, rather than revoking the wrong thing.
+func TestSecretToken_RevokeMissingTokenID(t *testing.T) {
+	b, _ := getTestBackend(t)
+	_, err := b.tokenRevoke(context.Background(), &logical.Request{
+		Secret: &logical.Secret{InternalData: map[string]interface{}{}},
+	}, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "token_id missing")
+}
+
+// TestSecretToken_RevokeBadTokenIDType asserts tokenRevoke rejects a token_id of
+// an unexpected type instead of panicking on the type assertion.
+func TestSecretToken_RevokeBadTokenIDType(t *testing.T) {
+	b, _ := getTestBackend(t)
+	_, err := b.tokenRevoke(context.Background(), &logical.Request{
+		Secret: &logical.Secret{InternalData: map[string]interface{}{"token_id": []string{"nope"}}},
+	}, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "token_id")
+}
+
+// TestCredentials_RevokeSurfacesAAPFailure asserts that when neither the snapshot
+// credential nor the current config can delete the token (AAP returns errors for
+// both), revoke surfaces the failure rather than silently dropping the lease.
+func TestCredentials_RevokeSurfacesAAPFailure(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "read", "ttl": "1h"})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/ci", Storage: s,
+	})
+	require.NoError(t, err)
+	secret := resp.Secret
+
+	m.failRevoke = true // both the snapshot client and the fallback client fail.
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.RevokeOperation, Path: "creds/ci", Storage: s, Secret: secret,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "error revoking AAP token")
+}
+
+// TestCredentials_RevokeFallsBackWhenSnapshotConfigFails asserts that when the
+// lease's snapshot credential can no longer delete the token (e.g. it was revoked
+// by rotate-root), revoke falls back to the engine's current config, which—owned
+// by the same identity—can still delete it.
+func TestCredentials_RevokeFallsBackWhenSnapshotConfigFails(t *testing.T) {
+	original := newMockAAP("token-a")
+	originalSrv := original.server(t)
+	defer originalSrv.Close()
+	rotated := newMockAAP("token-b")
+	rotatedSrv := rotated.server(t)
+	defer rotatedSrv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, originalSrv.URL, "token-a")
+	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "read", "ttl": "1h"})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/ci", Storage: s,
+	})
+	require.NoError(t, err)
+	tokenID, err := strconv.ParseInt(resp.Secret.InternalData["token_id"].(string), 10, 64)
+	require.NoError(t, err)
+
+	// The snapshot credential (original) can no longer delete the token; the
+	// rotated config can. Point the engine at the rotated server.
+	original.failRevoke = true
+	rotated.seedLive(tokenID, "read")
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation, Path: "config", Storage: s,
+		Data: map[string]interface{}{
+			"address": rotatedSrv.URL, "token": "token-b",
+			"tokens_api_path": "/api/gateway/v1", "skip_tls_verify": true,
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.RevokeOperation, Path: "creds/ci", Storage: s, Secret: resp.Secret,
+	})
+	require.NoError(t, err)
+	require.True(t, rotated.wasRevoked(tokenID), "revoke must fall back to the current config when the snapshot credential fails")
+}
+
+// TestCredentials_RevokeErrorsWhenSnapshotFailsAndNoCurrentConfig asserts that if
+// the snapshot credential fails and the engine config has since been deleted,
+// revoke returns an error naming both causes rather than failing silently.
+func TestCredentials_RevokeErrorsWhenSnapshotFailsAndNoCurrentConfig(t *testing.T) {
+	m := newMockAAP("admin-token")
+	srv := m.server(t)
+	defer srv.Close()
+
+	b, s := getTestBackend(t)
+	ctx := context.Background()
+	testConfigCreate(t, b, s, srv.URL, "admin-token")
+	testRoleCreate(t, b, s, "ci", map[string]interface{}{"scope": "read", "ttl": "1h"})
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation, Path: "creds/ci", Storage: s,
+	})
+	require.NoError(t, err)
+	secret := resp.Secret
+
+	m.failRevoke = true // snapshot credential can't delete the token...
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.DeleteOperation, Path: "config", Storage: s,
+	})
+	require.NoError(t, err) // ...and the current config is now gone.
+
+	_, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.RevokeOperation, Path: "creds/ci", Storage: s, Secret: secret,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "current config unavailable")
 }
 
 // TestCredentials_PerUserMint verifies that a role with a bootstrap_token mints a

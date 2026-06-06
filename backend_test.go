@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,6 +17,43 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 	"github.com/stretchr/testify/require"
 )
+
+// faultStorage decorates a logical.Storage to inject failures on Put or Delete
+// for keys under a given prefix. It is the harness for exercising createCreds'
+// WAL safety-net branches: failing a "wal/" Put simulates an inability to record
+// rollback intent, and failing a "wal/" Delete simulates an inability to drop the
+// safety net once the lease owns revocation. All other operations pass through.
+type faultStorage struct {
+	logical.Storage
+	failPutPrefix    string // Put on a key with this prefix returns errInjectedFault
+	failDeletePrefix string // Delete on a key with this prefix returns errInjectedFault
+}
+
+var errInjectedFault = errors.New("injected storage fault")
+
+func (f *faultStorage) Put(ctx context.Context, e *logical.StorageEntry) error {
+	if f.failPutPrefix != "" && strings.HasPrefix(e.Key, f.failPutPrefix) {
+		return errInjectedFault
+	}
+	return f.Storage.Put(ctx, e)
+}
+
+func (f *faultStorage) Delete(ctx context.Context, key string) error {
+	if f.failDeletePrefix != "" && strings.HasPrefix(key, f.failDeletePrefix) {
+		return errInjectedFault
+	}
+	return f.Storage.Delete(ctx, key)
+}
+
+// seedLive registers a token id as live with the given scope without going
+// through a mint. Used to model a token that the current (post-rotation) config
+// can still see and delete, so the revoke fallback path can be exercised.
+func (m *mockAAP) seedLive(id int64, scope string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.live[id] = scope
+	m.mintUsers[id] = m.identities["Bearer "+m.wantAuth]
+}
 
 // getTestBackend returns a fresh backend wired to in-memory storage.
 func getTestBackend(tb testing.TB) (*aapBackend, logical.Storage) {
