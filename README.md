@@ -93,7 +93,7 @@ any stored bearer token and root-rotation token id.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `scope` | `write` | `read` or `write`; set `read` explicitly for least privilege |
+| `scope` | `read` | `read` or `write`; set `write` explicitly when callers need mutation privileges |
 | `description` | — | description applied to minted AAP tokens |
 | `username` | — | optional AAP user the minted token must be owned by; requires `bootstrap_token` |
 | `bootstrap_token` | — | that user's own AAP token, so tokens are minted *as* them (write-only) |

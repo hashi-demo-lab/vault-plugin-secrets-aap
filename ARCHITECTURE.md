@@ -53,7 +53,7 @@ drive the design:
 | Vault concept | Purpose | Fields |
 |---------------|---------|--------|
 | **Config** (`config`) | AAP connection | `address`, auth: `token` **or** `username`+`password` (sensitive), `tokens_api_path`, `ca_cert`, `skip_tls_verify`; internal `token_id` (rotate-root) |
-| **Role** (`role/<name>`) | Issuance policy | `scope` (read\|write, default `write`), `description`, `username` (owner guard, requires `bootstrap_token`), `bootstrap_token` (sensitive), `application`, `ttl`, `max_ttl` |
+| **Role** (`role/<name>`) | Issuance policy | `scope` (read\|write, default `read`), `description`, `username` (owner guard, requires `bootstrap_token`), `bootstrap_token` (sensitive), `application`, `ttl`, `max_ttl` |
 | **Credentials** (`creds/<name>`) | Mint a leased token | returns `token`, `token_id`, `scope`, `expires` |
 
 ## Vault API
@@ -223,8 +223,8 @@ issued, the engine also best-effort revokes immediately. One sub-second window i
   robustness — see *Revocation snapshot & blast radius*. Use `rotate-root` to rotate it.
 - Minted token secret values are returned **once** and held only under a Vault lease.
 - `skip_tls_verify=true` is insecure; production should configure `ca_cert` instead.
-- Least privilege: roles fix `scope` (default `write` for backward compatibility; set `read`
-  explicitly for least privilege); ownership/application guards prevent
+- Least privilege: roles fix `scope` (default `read`; set `write` explicitly when mutation
+  privileges are required); ownership/application guards prevent
   issuing a token with the wrong identity or binding.
 - No orphaned credentials: WAL rollback revokes any token created in AAP whose lease was
   never durably stored.

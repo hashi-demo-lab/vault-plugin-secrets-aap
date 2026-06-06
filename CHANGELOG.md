@@ -26,8 +26,8 @@ All notable changes to this project are documented here. The format is based on
 - Plugin entrypoint test coverage via an extracted `serveOpts`. (#7)
 
 ### Changed
-- Role `scope` remains backward-compatible at **`write`** by default; set `scope=read`
-  explicitly for least privilege.
+- Role `scope` now defaults to least-privilege **`read`**; set `scope=write` explicitly when
+  callers need mutation privileges.
 - `config` auth updates now replace the active auth scheme: bearer-token writes clear basic
   credentials, and username/password writes clear bearer credentials and rotate-root token id.
 - Role writes now reject `username` without `bootstrap_token`, surfacing per-user

@@ -71,8 +71,8 @@ func pathRole(b *aapBackend) []*framework.Path {
 				},
 				"scope": {
 					Type:        framework.TypeString,
-					Default:     "write",
-					Description: "OAuth2 scope granted to minted tokens: 'read' or 'write'. Defaults to 'write' for backward compatibility; set 'read' explicitly for least privilege.",
+					Default:     "read",
+					Description: "OAuth2 scope granted to minted tokens: 'read' or 'write'. Defaults to least-privilege 'read'.",
 				},
 				"description": {
 					Type:        framework.TypeString,
