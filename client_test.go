@@ -115,6 +115,37 @@ func TestClient_CreateToken_OwnedByCaller(t *testing.T) {
 	require.Equal(t, int64(7), m.mintUserFor(tok.ID))
 }
 
+func TestClient_BasicAuth(t *testing.T) {
+	m := newMockAAP("admin-token")
+	m.addBasicIdentity("svc", "pw", 5)
+	srv := m.server(t)
+	defer srv.Close()
+
+	c, err := newClient(&aapConfig{
+		Address: srv.URL, Username: "svc", Password: "pw",
+		TokensAPIPath: "/api/gateway/v1", SkipTLSVerify: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "basic", c.auth.scheme())
+
+	tok, err := c.CreateToken(context.Background(), "read", "via-basic")
+	require.NoError(t, err)
+	require.Equal(t, int64(5), m.mintUserFor(tok.ID), "basic-auth client mints as its user")
+}
+
+func TestClient_authenticatorFromConfig(t *testing.T) {
+	a, err := authenticatorFromConfig(&aapConfig{Token: "t"})
+	require.NoError(t, err)
+	require.Equal(t, "bearer", a.scheme())
+
+	a, err = authenticatorFromConfig(&aapConfig{Username: "u", Password: "p"})
+	require.NoError(t, err)
+	require.Equal(t, "basic", a.scheme())
+
+	_, err = authenticatorFromConfig(&aapConfig{})
+	require.ErrorIs(t, err, errMissingToken)
+}
+
 func TestClient_ResolveUserID_Ambiguous(t *testing.T) {
 	m := newMockAAP("admin-token")
 	srv := m.server(t)

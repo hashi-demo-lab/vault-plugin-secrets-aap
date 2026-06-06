@@ -2,6 +2,7 @@ package aap
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -55,9 +56,9 @@ func newMockAAP(bearer string) *mockAAP {
 		wantAuth: bearer,
 		// Service accounts a per-user role can target in tests.
 		users: map[string]int64{"admin": 2, "svc-deploy": 7, "svc-readonly": 8},
-		// The admin token mints as id 2 ("admin"). Bootstrap tokens are added per
-		// test via addIdentity.
-		identities: map[string]int64{bearer: 2},
+		// identities is keyed by the full Authorization header value -> owner id.
+		// The admin bearer token mints as id 2 ("admin"); more are added per test.
+		identities: map[string]int64{"Bearer " + bearer: 2},
 		mintUsers:  map[int64]int64{},
 	}
 }
@@ -66,18 +67,21 @@ func newMockAAP(bearer string) *mockAAP {
 func (m *mockAAP) addIdentity(token string, userID int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.identities[token] = userID
+	m.identities["Bearer "+token] = userID
 }
 
-// ownerFor returns the user id a bearer token authenticates as, and whether the
-// token is known (authorized).
+// addBasicIdentity registers a basic-auth credential that mints as the given id.
+func (m *mockAAP) addBasicIdentity(username, password string, userID int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	hdr := "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+	m.identities[hdr] = userID
+}
+
+// ownerFor returns the user id the request authenticates as (by exact
+// Authorization header match), and whether the credential is known.
 func (m *mockAAP) ownerFor(r *http.Request) (int64, bool) {
-	const prefix = "Bearer "
-	auth := r.Header.Get("Authorization")
-	if len(auth) <= len(prefix) {
-		return 0, false
-	}
-	id, ok := m.identities[auth[len(prefix):]]
+	id, ok := m.identities[r.Header.Get("Authorization")]
 	return id, ok
 }
 
