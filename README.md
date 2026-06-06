@@ -25,6 +25,10 @@ revoked. Vault becomes the single point of issuance, audit, and revocation for A
 
 ## Quick start
 
+> For production installation (release artifacts, checksum verification, plugin
+> registration, upgrades, HA notes), see [`docs/INSTALL.md`](./docs/INSTALL.md). The steps
+> below are the local dev-Vault flow.
+
 ```bash
 # 1. Build
 make build                       # -> vault/plugins/vault-plugin-secrets-aap
